@@ -1,0 +1,55 @@
+/* Correlation Analysis - Qt Stylesheet overrides */
+
+QPushButton {
+    color: white;
+    font-weight: 500;
+    border-radius: 4px;
+    padding: 4px 12px;
+}
+
+QPushButton:disabled {
+    color: #9E9E9E;
+}
+
+QTableView {
+    gridline-color: #E0E0E0;
+    selection-background-color: #1565C0;
+    selection-color: white;
+    alternate-background-color: #F5F5F5;
+}
+
+QHeaderView::section {
+    background-color: #E3F2FD;
+    color: #1565C0;
+    font-weight: bold;
+    padding: 4px;
+    border: 1px solid #BBDEFB;
+}
+
+QTabWidget::pane {
+    border: 1px solid #BBDEFB;
+    border-radius: 4px;
+}
+
+QTabBar::tab {
+    padding: 6px 16px;
+    border-radius: 4px 4px 0 0;
+}
+
+QTabBar::tab:selected {
+    background-color: #1565C0;
+    color: white;
+}
+
+QSplitter::handle {
+    background-color: #BBDEFB;
+}
+
+QLabel {
+    color: #212121;
+}
+
+QStatusBar {
+    background-color: #E3F2FD;
+    color: #1565C0;
+}
