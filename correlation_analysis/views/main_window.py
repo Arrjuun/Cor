@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
     save_session_requested = Signal(str)
     load_session_requested = Signal(str)
     export_html_requested = Signal(str)
+    export_csv_requested = Signal(str)
     new_session_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -82,6 +83,10 @@ class MainWindow(QMainWindow):
         export_act = QAction("Export to HTML…", self)
         export_act.triggered.connect(self._on_export_html)
         file_menu.addAction(export_act)
+
+        export_csv_act = QAction("Export to CSV…", self)
+        export_csv_act.triggered.connect(self._on_export_csv)
+        file_menu.addAction(export_csv_act)
 
         file_menu.addSeparator()
 
@@ -168,6 +173,14 @@ class MainWindow(QMainWindow):
         )
         if filepath:
             self.export_html_requested.emit(filepath)
+
+    def _on_export_csv(self) -> None:
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export to CSV",
+            filter="CSV Files (*.csv)"
+        )
+        if filepath:
+            self.export_csv_requested.emit(filepath)
 
     def _on_about(self) -> None:
         QMessageBox.about(

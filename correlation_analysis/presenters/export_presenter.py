@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtWidgets import QMessageBox
 
 from ..utils.bokeh_exporter import BokehExporter
+from ..utils.csv_exporter import export_csv as _export_csv_util
 
 if TYPE_CHECKING:
     from ..views.main_window import MainWindow
@@ -26,6 +27,7 @@ class ExportPresenter:
 
     def _connect_signals(self) -> None:
         self._window.export_html_requested.connect(self.export_html)
+        self._window.export_csv_requested.connect(self.export_csv)
 
     def export_html(self, filepath: str) -> None:
         try:
@@ -89,3 +91,17 @@ class ExportPresenter:
             )
         except Exception as exc:
             self._window.show_error(f"Export failed:\n{exc}")
+
+    def export_csv(self, filepath: str) -> None:
+        try:
+            tab_view = self._window.analysis_view.get_tab_view()
+            data_model = self._analysis._data
+            _export_csv_util(filepath, tab_view, data_model)
+            self._window.show_status(f"Exported to CSV: {filepath}")
+            QMessageBox.information(
+                self._window,
+                "Export Complete",
+                f"Successfully exported to:\n{filepath}",
+            )
+        except Exception as exc:
+            self._window.show_error(f"CSV export failed:\n{exc}")
