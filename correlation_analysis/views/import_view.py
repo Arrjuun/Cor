@@ -481,6 +481,98 @@ class ImportView(QWidget):
         self.set_mapping_info("No mapping loaded.", loaded=False)
         self._btn_proceed.setEnabled(False)
 
+    def show_missing_sensors_dialog(
+        self,
+        unmapped: dict[str, list[str]],
+        incomplete_canonicals: dict[str, list[str]],
+    ) -> None:
+        """Show a dialog listing sensors missing from the mapping coverage.
+
+        Args:
+            unmapped: ``{display_name: [sensor_names]}`` — sensors present in
+                the imported CSVs that are not referenced by any mapping entry.
+            incomplete_canonicals: ``{canonical_name: [source_cols]}`` —
+                canonical sensors that have no alias for ≥1 mapping source column.
+        """
+        from PySide6.QtGui import QColor as _QColor
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Missing Sensors Report")
+        dlg.setMinimumSize(700, 480)
+        layout = QVBoxLayout(dlg)
+
+        has_issues = bool(unmapped or incomplete_canonicals)
+        if not has_issues:
+            layout.addWidget(QLabel(
+                "<b style='color:#4CAF50;'>All sensors are fully covered by the mapping.</b>"
+            ))
+            btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+            btns.accepted.connect(dlg.accept)
+            layout.addWidget(btns)
+            dlg.exec()
+            return
+
+        summary = []
+        if unmapped:
+            total_unmapped = sum(len(v) for v in unmapped.values())
+            summary.append(
+                f"<b style='color:#F44336;'>{total_unmapped} sensor(s) in imported files "
+                f"have no mapping entry.</b>"
+            )
+        if incomplete_canonicals:
+            summary.append(
+                f"<b style='color:#FF9800;'>{len(incomplete_canonicals)} canonical sensor(s) "
+                f"are missing from one or more mapping source columns.</b>"
+            )
+        summary_lbl = QLabel("<br>".join(summary))
+        summary_lbl.setWordWrap(True)
+        layout.addWidget(summary_lbl)
+
+        # --- Unmapped sensors table ---
+        if unmapped:
+            layout.addWidget(QLabel("<b>Sensors in imported files not covered by mapping:</b>"))
+            rows = [(src, sensor) for src, sensors in unmapped.items() for sensor in sensors]
+            tbl = QTableWidget(len(rows), 2)
+            tbl.setHorizontalHeaderLabels(["Source File", "Sensor Name"])
+            tbl.verticalHeader().setVisible(False)
+            tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            for r, (src, sensor) in enumerate(rows):
+                src_item = QTableWidgetItem(src)
+                src_item.setBackground(_QColor("#FFEBEE"))
+                tbl.setItem(r, 0, src_item)
+                tbl.setItem(r, 1, QTableWidgetItem(sensor))
+            tbl.resizeColumnsToContents()
+            tbl.setMaximumHeight(200)
+            layout.addWidget(tbl)
+
+        # --- Incomplete canonicals table ---
+        if incomplete_canonicals:
+            layout.addWidget(QLabel(
+                "<b>Canonical sensors missing from one or more mapping source columns:</b>"
+            ))
+            rows2 = [
+                (canonical, col)
+                for canonical, cols in incomplete_canonicals.items()
+                for col in cols
+            ]
+            tbl2 = QTableWidget(len(rows2), 2)
+            tbl2.setHorizontalHeaderLabels(["Canonical Name", "Missing Source Column"])
+            tbl2.verticalHeader().setVisible(False)
+            tbl2.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            for r, (canonical, col) in enumerate(rows2):
+                canonical_item = QTableWidgetItem(canonical)
+                canonical_item.setBackground(_QColor("#FFF3E0"))
+                tbl2.setItem(r, 0, canonical_item)
+                tbl2.setItem(r, 1, QTableWidgetItem(col))
+            tbl2.resizeColumnsToContents()
+            tbl2.setMaximumHeight(200)
+            layout.addWidget(tbl2)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        btns.accepted.connect(dlg.accept)
+        layout.addWidget(btns)
+        dlg.exec()
+
     def show_mapping_dialog(self, mapping_data: dict) -> None:
         """Show a read-only table of canonical → per-source aliases."""
         dlg = QDialog(self)

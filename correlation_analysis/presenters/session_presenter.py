@@ -110,6 +110,7 @@ class SessionPresenter:
             self._analysis.graph_presenter.restore_graphs_from_config(
                 state.get("tabs", [])
             )
+            self._window.lock_import_view()
             self._window.show_view(1)  # switch to analysis view
             self._window.show_status(
                 f"Session loaded: {Path(filepath).name}"

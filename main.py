@@ -1,6 +1,7 @@
 """Application entry point."""
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -12,6 +13,7 @@ try:
 except ImportError:
     _HAS_QT_MATERIAL = False
 
+from correlation_analysis.utils.logging_config import setup_logging
 from correlation_analysis.models.data_model import DataModel
 from correlation_analysis.models.sensor_mapping import SensorMapping
 from correlation_analysis.models.formula_engine import FormulaEngine
@@ -25,6 +27,12 @@ from correlation_analysis.presenters.export_presenter import ExportPresenter
 
 
 def main() -> None:
+    log_file = setup_logging()
+
+    log = logging.getLogger(__name__)
+    log.info("=" * 60)
+    log.info("Correlation Analysis starting. Log file: %s", log_file)
+
     app = QApplication(sys.argv)
     app.setApplicationName("Correlation Analysis")
     app.setOrganizationName("Airbus")
@@ -98,7 +106,10 @@ def main() -> None:
     # Show                                                                 #
     # ------------------------------------------------------------------ #
     window.show()
-    sys.exit(app.exec())
+    log.info("Application window shown. Entering event loop.")
+    exit_code = app.exec()
+    log.info("Application exited with code %d.", exit_code)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

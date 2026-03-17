@@ -1,12 +1,16 @@
 """Import View Presenter."""
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QLineEdit, QMessageBox
 
 from ..models.data_model import DataModel
 from ..models.sensor_mapping import SensorMapping
 from ..utils.csv_parser import CSVParseError, parse_sensor_csv, validate_raw_dataframe
 from ..views.import_view import ImportView
+
+log = logging.getLogger(__name__)
 
 
 class ImportPresenter:
@@ -45,13 +49,16 @@ class ImportPresenter:
             self._import_single_csv(filepath)
 
     def _import_single_csv(self, filepath: str) -> None:
+        log.info("Importing CSV: %s", filepath)
         try:
             df, result = parse_sensor_csv(filepath)
         except CSVParseError as exc:
+            log.error("Failed to import '%s': %s", filepath, exc)
             self._view.show_error(f"Failed to import '{filepath}':\n{str(exc)}")
             return
 
         if result.warnings:
+            log.warning("Warnings for '%s': %s", filepath, "; ".join(result.warnings))
             self._view.show_warning(
                 f"Warnings for '{filepath}':\n" + "\n".join(result.warnings)
             )
@@ -59,6 +66,8 @@ class ImportPresenter:
         import os
         display_name = os.path.basename(filepath)
         source_id = self._data.add_source(filepath, df, display_name)
+        log.info("CSV imported as source '%s' (%s): %d rows × %d columns",
+                 source_id, display_name, len(df), len(df.columns))
 
         table_widget = self._view.add_source_table(
             source_id, df, display_name, is_valid=result.is_valid
@@ -86,26 +95,49 @@ class ImportPresenter:
         if not filepath:
             return
 
+        log.info("Importing mapping file: %s", filepath)
         source_ids = self._data.source_ids()
         try:
             self._mapping.load_from_file(filepath, source_ids)
         except Exception as exc:
+            log.error("Failed to load mapping from '%s': %s", filepath, exc)
             self._view.show_error(f"Failed to load mapping: {exc}")
             return
 
         n = len(self._mapping.canonical_names())
         self._view.set_mapping_info(f"✓ Mapping loaded: {n} canonical sensors.", loaded=True)
 
-        # Build display-friendly mapping dict for the dialog
-        mapping_display = self._mapping.to_dict()
-        self._view.show_mapping_dialog(mapping_display)
+        # Build per-source sensor lists using display names for readability
+        imported_sensors: dict[str, list[str]] = {}
+        for sid in source_ids:
+            ds = self._data.get_source(sid)
+            if ds is None:
+                continue
+            df = self._data.get_dataframe(sid)
+            if df is None:
+                continue
+            # Row 0 is the header row; sensor names start from row 1, column 0
+            sensor_names = [str(df.iloc[r, 0]) for r in range(1, len(df))
+                            if str(df.iloc[r, 0]).strip()]
+            imported_sensors[ds.display_name] = sensor_names
+
+        unmapped, incomplete = self._mapping.get_missing_analysis(imported_sensors)
+
+        # Always show the missing-sensors popup so users are informed of gaps
+        self._view.show_missing_sensors_dialog(unmapped, incomplete)
+
+        # Show the full mapping table afterwards
+        self._view.show_mapping_dialog(self._mapping.to_dict())
 
     def on_proceed(self) -> None:
         """Finalize all raw DataFrames (promote row 0 → headers, col 0 → index)."""
+        log.info("Proceeding to analysis — finalizing %d source(s).", len(self._data.source_ids()))
         for source_id in self._data.source_ids():
             try:
                 self._data.finalize_source(source_id)
+                log.debug("Source '%s' finalized.", source_id)
             except Exception as exc:
+                log.error("Failed to finalize source '%s': %s", source_id, exc)
                 self._view.show_error(
                     f"Cannot proceed — failed to finalize data for source '{source_id}':\n{exc}"
                 )
@@ -114,6 +146,7 @@ class ImportPresenter:
     def _on_delete_rows(self, source_id: str, row_positions: list[int]) -> None:
         labels = [f"Row {p + 1}" for p in row_positions]
         if self._view.confirm_delete(labels, "rows"):
+            log.debug("Deleting rows %s from source '%s'.", row_positions, source_id)
             self._data.delete_raw_rows(source_id, row_positions)
             df = self._data.get_dataframe(source_id)
             if df is not None:
@@ -123,6 +156,7 @@ class ImportPresenter:
     def _on_delete_columns(self, source_id: str, col_positions: list[int]) -> None:
         labels = [f"Column {p + 1}" for p in col_positions]
         if self._view.confirm_delete(labels, "columns"):
+            log.debug("Deleting columns %s from source '%s'.", col_positions, source_id)
             self._data.delete_raw_columns(source_id, col_positions)
             df = self._data.get_dataframe(source_id)
             if df is not None:
