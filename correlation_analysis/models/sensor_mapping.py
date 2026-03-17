@@ -93,5 +93,10 @@ class SensorMapping:
     # Serialization                                                        #
     # ------------------------------------------------------------------ #
 
+    def clear(self) -> None:
+        """Remove all mappings."""
+        self._mapping.clear()
+        self._reverse.clear()
+
     def to_dict(self) -> dict:
         return {k: dict(v) for k, v in self._mapping.items()}

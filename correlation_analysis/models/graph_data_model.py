@@ -105,6 +105,9 @@ class GraphDataModel:
                 cols = sorted([c for c in df.columns if isinstance(c, (int, float))])
                 if sensor not in df.index or not cols:
                     return np.nan
+                # No extrapolation — return NaN if outside the available range
+                if ls < cols[0] or ls > cols[-1]:
+                    return np.nan
                 y = df.loc[sensor, cols].values.astype(float)
                 return float(np.interp(ls, cols, y))
             return np.nan

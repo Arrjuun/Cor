@@ -37,6 +37,36 @@ class SessionPresenter:
     def _connect_signals(self) -> None:
         self._window.save_session_requested.connect(self.save_session)
         self._window.load_session_requested.connect(self.load_session)
+        self._window.new_session_requested.connect(self.new_session)
+
+    # ------------------------------------------------------------------ #
+    # New session                                                          #
+    # ------------------------------------------------------------------ #
+
+    def new_session(self) -> None:
+        reply = QMessageBox.question(
+            self._window,
+            "New Session",
+            "Start a new session? All unsaved data will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Clear models
+        self._data.clear()
+        self._mapping.clear()
+
+        # Reset views
+        self._window.analysis_view.clear_tables()
+        tab_view = self._window.analysis_view.get_tab_view()
+        tab_view.clear_all_tabs()
+        tab_view.add_tab("Analysis 1")   # restore default tab
+        self._window.import_view.reset()
+
+        # Unlock import navigation and switch back
+        self._window.unlock_import_view()
+        self._window.show_view(0)  # VIEW_IMPORT
 
     # ------------------------------------------------------------------ #
     # Save                                                                 #

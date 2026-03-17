@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QFileDialog, QInputDialog, QLineEdit, QMessageBox
 
 from ..models.data_model import DataModel
 from ..models.sensor_mapping import SensorMapping
-from ..utils.csv_parser import CSVParseError, parse_sensor_csv
+from ..utils.csv_parser import CSVParseError, parse_sensor_csv, validate_raw_dataframe
 from ..views.import_view import ImportView
 
 
@@ -26,6 +26,8 @@ class ImportPresenter:
     def _connect_signals(self) -> None:
         self._view.import_csv_requested.connect(self.on_import_csv)
         self._view.import_mapping_requested.connect(self.on_import_mapping)
+        self._view.remove_mapping_requested.connect(self._on_remove_mapping)
+        self._view.view_mapping_requested.connect(self._on_view_mapping)
         self._view.proceed_requested.connect(self.on_proceed)
         self._view.remove_source_requested.connect(self._on_remove_source)
 
@@ -65,6 +67,9 @@ class ImportPresenter:
         # Connect table widget signals
         table_widget.row_delete_requested.connect(self._on_delete_rows)
         table_widget.column_delete_requested.connect(self._on_delete_columns)
+        table_widget.scale_strain_requested.connect(self._on_scale_strain)
+        table_widget.add_strain_requested.connect(self._on_add_strain)
+        table_widget.offset_loadsteps_requested.connect(self._on_offset_loadsteps)
 
         if not result.is_valid:
             self._view.show_warning(
@@ -89,31 +94,73 @@ class ImportPresenter:
             return
 
         n = len(self._mapping.canonical_names())
-        self._view.set_mapping_info(f"✓ Mapping loaded: {n} canonical sensors.")
+        self._view.set_mapping_info(f"✓ Mapping loaded: {n} canonical sensors.", loaded=True)
 
         # Build display-friendly mapping dict for the dialog
-        # Keys = canonical names, values = {source_col_name: alias}
         mapping_display = self._mapping.to_dict()
         self._view.show_mapping_dialog(mapping_display)
 
     def on_proceed(self) -> None:
-        # Implemented by connecting to main window's show_view
-        pass
+        """Finalize all raw DataFrames (promote row 0 → headers, col 0 → index)."""
+        for source_id in self._data.source_ids():
+            try:
+                self._data.finalize_source(source_id)
+            except Exception as exc:
+                self._view.show_error(
+                    f"Cannot proceed — failed to finalize data for source '{source_id}':\n{exc}"
+                )
+                return
 
-    def _on_delete_rows(self, source_id: str, sensors: list[str]) -> None:
-        if self._view.confirm_delete(sensors, "sensors"):
-            self._data.delete_rows(source_id, sensors)
+    def _on_delete_rows(self, source_id: str, row_positions: list[int]) -> None:
+        labels = [f"Row {p + 1}" for p in row_positions]
+        if self._view.confirm_delete(labels, "rows"):
+            self._data.delete_raw_rows(source_id, row_positions)
             df = self._data.get_dataframe(source_id)
             if df is not None:
                 self._view.update_source_table(source_id, df)
+                self._view.set_source_valid(source_id, validate_raw_dataframe(df))
 
-    def _on_delete_columns(self, source_id: str, load_steps: list[float]) -> None:
-        items = [str(ls) for ls in load_steps]
-        if self._view.confirm_delete(items, "load steps"):
-            self._data.delete_columns(source_id, load_steps)
+    def _on_delete_columns(self, source_id: str, col_positions: list[int]) -> None:
+        labels = [f"Column {p + 1}" for p in col_positions]
+        if self._view.confirm_delete(labels, "columns"):
+            self._data.delete_raw_columns(source_id, col_positions)
             df = self._data.get_dataframe(source_id)
             if df is not None:
                 self._view.update_source_table(source_id, df)
+                self._view.set_source_valid(source_id, validate_raw_dataframe(df))
+
+    def _on_remove_mapping(self) -> None:
+        reply = QMessageBox.question(
+            self._view,
+            "Remove Mapping",
+            "Remove the loaded sensor mapping?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._mapping.clear()
+            self._view.set_mapping_info("No mapping loaded.", loaded=False)
+
+    def _on_view_mapping(self) -> None:
+        if not self._mapping.is_empty():
+            self._view.show_mapping_dialog(self._mapping.to_dict())
+
+    def _on_scale_strain(self, source_id: str, factor: float) -> None:
+        self._data.scale_raw_strain(source_id, factor)
+        self._refresh_table(source_id)
+
+    def _on_add_strain(self, source_id: str, offset: float) -> None:
+        self._data.add_raw_strain(source_id, offset)
+        self._refresh_table(source_id)
+
+    def _on_offset_loadsteps(self, source_id: str, offset: float) -> None:
+        self._data.offset_raw_loadsteps(source_id, offset)
+        self._refresh_table(source_id)
+
+    def _refresh_table(self, source_id: str) -> None:
+        df = self._data.get_dataframe(source_id)
+        if df is not None:
+            self._view.update_source_table(source_id, df)
+            self._view.set_source_valid(source_id, validate_raw_dataframe(df))
 
     def _on_remove_source(self, source_id: str) -> None:
         source = self._data.get_source(source_id)

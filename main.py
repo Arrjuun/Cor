@@ -75,10 +75,11 @@ def main() -> None:
         mapping,
     )
 
-    # Navigate to analysis view on proceed
+    # Navigate to analysis view on proceed (one-way: import view locked afterwards)
     window.import_view.proceed_requested.connect(
         lambda: (
             analysis_presenter.initialize_from_model(),
+            window.lock_import_view(),
             window.show_view(VIEW_ANALYSIS),
         )
     )

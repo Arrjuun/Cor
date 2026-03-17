@@ -212,13 +212,87 @@ class GraphPresenter:
         sid_a = numerator_cb.currentData()
         sid_b = denominator_cb.currentData()
         if sid_a == sid_b:
-            QMessageBox.warning(self._view, "Ratio Graph", "Numerator and denominator must be different sources.")
+            QMessageBox.warning(self._view, "Ratio Graph",
+                                "Numerator and denominator must be different sources.")
             return
+
+        # ---- Check if load_step exists in both sources; offer interpolation if not ----
+        interpolate = False
+        df_a = self._data.get_dataframe(sid_a)
+        df_b = self._data.get_dataframe(sid_b)
+
+        def _ls_info(df, src_name: str) -> tuple[bool, bool, list[float]]:
+            """Return (has_exact, within_range, sorted_cols)."""
+            cols = sorted([c for c in df.columns if isinstance(c, (int, float))])
+            has_exact = load_step in df.columns
+            within_range = bool(cols) and cols[0] <= load_step <= cols[-1]
+            return has_exact, within_range, cols
+
+        has_a, in_range_a, cols_a = _ls_info(df_a, source_names[sid_a])
+        has_b, in_range_b, cols_b = _ls_info(df_b, source_names[sid_b])
+
+        missing: list[tuple[str, bool, list[float]]] = []  # (name, within_range, cols)
+        if not has_a:
+            missing.append((source_names[sid_a], in_range_a, cols_a))
+        if not has_b:
+            missing.append((source_names[sid_b], in_range_b, cols_b))
+
+        if missing:
+            can_interpolate = any(within for _, within, _ in missing)
+            lines = []
+            for src_name, within_range, cols in missing:
+                if within_range:
+                    # Find surrounding load steps
+                    lower = max((c for c in cols if c < load_step), default=None)
+                    upper = min((c for c in cols if c > load_step), default=None)
+                    lines.append(
+                        f"  • {src_name}: load step {load_step} not present "
+                        f"(available neighbours: {lower} ↔ {upper})"
+                    )
+                else:
+                    lo, hi = (cols[0], cols[-1]) if cols else ("?", "?")
+                    lines.append(
+                        f"  • {src_name}: load step {load_step} is outside the available "
+                        f"range [{lo} – {hi}] — cannot interpolate, those sensors will be excluded."
+                    )
+
+            if can_interpolate:
+                msg = (
+                    f"Load step {load_step} is not present in all selected sources:\n\n"
+                    + "\n".join(lines)
+                    + "\n\nSources within range will be linearly interpolated. "
+                    "Out-of-range sources will have those sensors excluded.\n\n"
+                    "Proceed with interpolation?"
+                )
+                reply = QMessageBox.question(
+                    self._view, "Interpolation Required",
+                    msg,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                interpolate = True
+            else:
+                # All missing sources are out of range — warn but still allow plotting
+                # (those sensors will end up as NaN and be excluded from the graph)
+                msg = (
+                    f"Load step {load_step} is outside the available range in:\n\n"
+                    + "\n".join(lines)
+                    + "\n\nSensors from those sources will be excluded from the ratio plot."
+                )
+                reply = QMessageBox.question(
+                    self._view, "Load Step Out of Range",
+                    msg + "\n\nContinue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
 
         try:
             ratio_df = self._graph_data.get_ratio_data(
                 sid_a, sid_b, load_step,
                 use_mapping=not self._mapping.is_empty(),
+                interpolate=interpolate,
             )
         except ValueError as exc:
             QMessageBox.warning(self._view, "Ratio Error", str(exc))
@@ -325,35 +399,44 @@ class GraphPresenter:
             if "num_columns" in tab_cfg:
                 tab.set_columns(tab_cfg["num_columns"])
 
-            for ls_cfg in tab_cfg.get("loadstep_graphs", []):
-                # Handle old format (list of series) and new format (dict)
-                if isinstance(ls_cfg, list):
-                    ls_cfg = {"title": "", "series": ls_cfg}
-                graph = tab.add_loadstep_graph(ls_cfg.get("title", ""))
-                for s in ls_cfg.get("series", []):
-                    try:
-                        x, y = self._graph_data.get_loadstep_series(
-                            s["source_id"], s["sensor_name"]
-                        )
-                        style = SeriesStyle.from_dict(s.get("style", {}))
-                        graph.add_series(s["sensor_name"], s["source_id"], x, y, style)
-                    except (ValueError, KeyError):
-                        pass
+            # Build an ordered list of (type, cfg) pairs.
+            # New format: tab_cfg["graphs"] is a single ordered list with a "type" key.
+            # Old format: separate "loadstep_graphs" / "ratio_graphs" lists (interleaved
+            # order is lost — restore loadstep first then ratio as before).
+            if "graphs" in tab_cfg:
+                ordered = [(g.get("type", "loadstep"), g) for g in tab_cfg["graphs"]]
+            else:
+                ordered = [("loadstep", g) for g in tab_cfg.get("loadstep_graphs", [])]
+                ordered += [("ratio", g) for g in tab_cfg.get("ratio_graphs", [])]
 
-            for rg_cfg in tab_cfg.get("ratio_graphs", []):
-                if not rg_cfg:
-                    continue
-                rg = tab.add_ratio_graph(rg_cfg.get("title", ""))
-                if rg_cfg.get("sensors"):
-                    rg.plot_ratio(
-                        rg_cfg["sensors"],
-                        rg_cfg["values_a"],
-                        rg_cfg["values_b"],
-                        rg_cfg["ratios"],
-                        load_step=rg_cfg.get("load_step", 0.0),
-                        label_a=rg_cfg.get("label_a", "Source A"),
-                        label_b=rg_cfg.get("label_b", "Source B"),
-                    )
+            for gtype, gcfg in ordered:
+                if gtype == "loadstep":
+                    if isinstance(gcfg, list):
+                        gcfg = {"title": "", "series": gcfg}
+                    graph = tab.add_loadstep_graph(gcfg.get("title", ""))
+                    for s in gcfg.get("series", []):
+                        try:
+                            x, y = self._graph_data.get_loadstep_series(
+                                s["source_id"], s["sensor_name"]
+                            )
+                            style = SeriesStyle.from_dict(s.get("style", {}))
+                            graph.add_series(s["sensor_name"], s["source_id"], x, y, style)
+                        except (ValueError, KeyError):
+                            pass
+                elif gtype == "ratio":
+                    if not gcfg:
+                        continue
+                    rg = tab.add_ratio_graph(gcfg.get("title", ""))
+                    if gcfg.get("sensors"):
+                        rg.plot_ratio(
+                            gcfg["sensors"],
+                            gcfg["values_a"],
+                            gcfg["values_b"],
+                            gcfg["ratios"],
+                            load_step=gcfg.get("load_step", 0.0),
+                            label_a=gcfg.get("label_a", "Source A"),
+                            label_b=gcfg.get("label_b", "Source B"),
+                        )
 
     # ------------------------------------------------------------------ #
     # Series customization                                                 #

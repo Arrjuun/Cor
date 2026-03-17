@@ -52,6 +52,11 @@ class DataModel:
     # CRUD                                                                 #
     # ------------------------------------------------------------------ #
 
+    def clear(self) -> None:
+        """Remove all sources."""
+        self._sources.clear()
+        self._notify("cleared", "")
+
     def add_source(self, filepath: str, df: pd.DataFrame,
                    display_name: str = "", source_id: str = "") -> str:
         """Add a new data source. Returns the assigned source_id."""
@@ -111,6 +116,97 @@ class DataModel:
             return
         cols_to_drop = [c for c in load_steps if c in ds.df.columns]
         df = ds.df.drop(columns=cols_to_drop, errors="ignore")
+        self._sources[source_id].df = df
+        self._notify("updated", source_id)
+
+    def delete_raw_rows(self, source_id: str, row_positions: list[int]) -> None:
+        """Delete rows by positional index (used in import view) and reset index."""
+        ds = self._sources.get(source_id)
+        if ds is None:
+            return
+        valid = [p for p in row_positions if 0 <= p < len(ds.df)]
+        if not valid:
+            return
+        df = ds.df.drop(ds.df.index[valid]).reset_index(drop=True)
+        df.columns = range(len(df.columns))
+        self._sources[source_id].df = df
+        self._notify("updated", source_id)
+
+    def delete_raw_columns(self, source_id: str, col_positions: list[int]) -> None:
+        """Delete columns by positional index (used in import view) and renumber."""
+        ds = self._sources.get(source_id)
+        if ds is None:
+            return
+        drop_set = {p for p in col_positions if 0 <= p < len(ds.df.columns)}
+        if not drop_set:
+            return
+        keep = [i for i in range(len(ds.df.columns)) if i not in drop_set]
+        df = ds.df.iloc[:, keep].copy()
+        df.columns = range(len(df.columns))
+        self._sources[source_id].df = df
+        self._notify("updated", source_id)
+
+    # ------------------------------------------------------------------ #
+    # Raw scalar operations (pre-finalization)                            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _apply_raw_scalar(df: pd.DataFrame, row_slice, col_slice,
+                          op: str, value: float) -> pd.DataFrame:
+        """
+        Apply a scalar operation to a slice of a raw (string-typed) DataFrame.
+        Works by converting the block to object dtype, operating, then
+        converting the result back to string so the table model can display it.
+        """
+        block = df.iloc[row_slice, col_slice].copy()
+        numeric = block.apply(pd.to_numeric, errors="coerce")
+        if op == "mul":
+            result = numeric * value
+        else:  # "add"
+            result = numeric + value
+        # Store as Python float strings (or keep NaN as empty string)
+        _fmt = lambda v: "" if pd.isna(v) else str(v)  # noqa: E731
+        str_result = result.apply(lambda col: col.map(_fmt))
+        # Rebuild df with object dtype for the affected columns to allow mixed types
+        df = df.copy()
+        df = df.astype(object)
+        df.iloc[row_slice, col_slice] = str_result.values
+        return df
+
+    def scale_raw_strain(self, source_id: str, factor: float) -> None:
+        """Multiply all strain cells (rows ≥1, cols ≥1) by *factor*."""
+        ds = self._sources.get(source_id)
+        if ds is None:
+            return
+        df = self._apply_raw_scalar(ds.df, slice(1, None), slice(1, None), "mul", factor)
+        self._sources[source_id].df = df
+        self._notify("updated", source_id)
+
+    def add_raw_strain(self, source_id: str, offset: float) -> None:
+        """Add *offset* to all strain cells (rows ≥1, cols ≥1)."""
+        ds = self._sources.get(source_id)
+        if ds is None:
+            return
+        df = self._apply_raw_scalar(ds.df, slice(1, None), slice(1, None), "add", offset)
+        self._sources[source_id].df = df
+        self._notify("updated", source_id)
+
+    def offset_raw_loadsteps(self, source_id: str, offset: float) -> None:
+        """Add *offset* to all load-step header cells (row 0, cols ≥1)."""
+        ds = self._sources.get(source_id)
+        if ds is None:
+            return
+        df = self._apply_raw_scalar(ds.df, slice(0, 1), slice(1, None), "add", offset)
+        self._sources[source_id].df = df
+        self._notify("updated", source_id)
+
+    def finalize_source(self, source_id: str) -> None:
+        """Convert raw import DataFrame to analysis format (row 0 → headers, col 0 → index)."""
+        from ..utils.csv_parser import finalize_dataframe
+        ds = self._sources.get(source_id)
+        if ds is None:
+            return
+        df = finalize_dataframe(ds.df)
         self._sources[source_id].df = df
         self._notify("updated", source_id)
 

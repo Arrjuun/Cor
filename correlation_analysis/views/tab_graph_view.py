@@ -161,11 +161,20 @@ class GraphTabContent(QWidget):
         self._all_graphs.clear()
 
     def to_config(self) -> dict:
+        graphs = []
+        for g in self._all_graphs:
+            if isinstance(g, LoadStepGraphWidget):
+                graphs.append({"type": "loadstep", **g.to_config()})
+            elif isinstance(g, RatioGraphWidget):
+                cfg = g.to_config()
+                if cfg:
+                    graphs.append({"type": "ratio", **cfg})
+                else:
+                    graphs.append({"type": "ratio"})
         return {
             "tab_id": self.tab_id,
             "num_columns": self._num_columns,
-            "loadstep_graphs": [g.to_config() for g in self._loadstep_graphs],
-            "ratio_graphs": [g.to_config() for g in self._ratio_graphs],
+            "graphs": graphs,
         }
 
 

@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
     save_session_requested = Signal(str)
     load_session_requested = Signal(str)
     export_html_requested = Signal(str)
+    new_session_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -58,6 +59,13 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = menubar.addMenu("File")
+
+        new_act = QAction("New Session", self)
+        new_act.setShortcut(QKeySequence.StandardKey.New)
+        new_act.triggered.connect(self.new_session_requested)
+        file_menu.addAction(new_act)
+
+        file_menu.addSeparator()
 
         open_act = QAction("Open Session…", self)
         open_act.setShortcut(QKeySequence.StandardKey.Open)
@@ -84,11 +92,11 @@ class MainWindow(QMainWindow):
 
         # View menu
         view_menu = menubar.addMenu("View")
-        import_act = QAction("Switch to Import View", self)
+        self._import_act = QAction("Switch to Import View", self)
         analysis_act = QAction("Switch to Analysis View", self)
-        import_act.triggered.connect(lambda: self.show_view(VIEW_IMPORT))
+        self._import_act.triggered.connect(lambda: self.show_view(VIEW_IMPORT))
         analysis_act.triggered.connect(lambda: self.show_view(VIEW_ANALYSIS))
-        view_menu.addAction(import_act)
+        view_menu.addAction(self._import_act)
         view_menu.addAction(analysis_act)
 
         # Help menu
@@ -110,7 +118,19 @@ class MainWindow(QMainWindow):
         return self._analysis_view
 
     def show_view(self, index: int) -> None:
+        if index == VIEW_IMPORT and getattr(self, "_import_locked", False):
+            return
         self._stack.setCurrentIndex(index)
+
+    def lock_import_view(self) -> None:
+        """Prevent navigation back to the import view (called after proceeding)."""
+        self._import_locked = True
+        self._import_act.setEnabled(False)
+
+    def unlock_import_view(self) -> None:
+        """Re-enable navigation to the import view (called on new session)."""
+        self._import_locked = False
+        self._import_act.setEnabled(True)
 
     def show_status(self, message: str, timeout: int = 3000) -> None:
         self._status_bar.showMessage(message, timeout)

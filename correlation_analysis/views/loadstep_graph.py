@@ -313,6 +313,7 @@ class LoadStepGraphWidget(QWidget):
 
     def dragLeaveEvent(self, event) -> None:
         self._dragging = False
+        self._release_plot_mouse()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:
@@ -331,6 +332,27 @@ class LoadStepGraphWidget(QWidget):
             event.acceptProposedAction()
         else:
             event.ignore()
+        # Defer to the next event-loop tick so all DnD bookkeeping and any
+        # modal-dialog events raised by series_dropped are fully processed first.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._release_plot_mouse)
+
+    def _release_plot_mouse(self) -> None:
+        """Clear stuck mouse-drag state in pyqtgraph after a DnD drop.
+
+        When a modal dialog is shown synchronously inside series_dropped (e.g.
+        "add mapped sensors?"), its event loop can leave pyqtgraph's GraphicsScene
+        with stale entries in dragButtons, causing the ViewBox to pan/zoom on
+        plain mouse-move. Clear that state directly.
+        """
+        from PySide6.QtWidgets import QApplication
+        scene = self._plot.scene()
+        if hasattr(scene, "dragButtons"):
+            scene.dragButtons.clear()
+        if hasattr(scene, "clickEvents"):
+            scene.clickEvents.clear()
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
 
     def eventFilter(self, obj, event) -> bool:
         from PySide6.QtCore import QEvent
@@ -344,7 +366,6 @@ class LoadStepGraphWidget(QWidget):
         if obj is self._plot.viewport() and self._dragging:
             if et in (
                 QEvent.Type.MouseButtonPress,
-                QEvent.Type.MouseButtonRelease,
                 QEvent.Type.MouseButtonDblClick,
                 QEvent.Type.MouseMove,
             ):
