@@ -53,13 +53,21 @@ class SensorEntry:
 
 @dataclass
 class BucklingGroup:
-    """One collapsible card in the dialog — represents one Sensor Pair value."""
+    """One collapsible card in the dialog — represents one Sensor Pair value.
+
+    For rosette groups the card is split per source, so ``source_label`` carries
+    the source display name (e.g. ``"source_a.csv"``).  For individual-sensor
+    groups it is left empty and all sources are shown as side-by-side columns.
+    """
     pair_id: str
     is_rosette: bool
-    rosette_id: str                         # "" when is_rosette is False
+    rosette_id: str                         # own rosette ID; "" when is_rosette is False
+    source_label: str = ""                  # non-empty for per-source rosette groups
     sensors: list[SensorEntry] = field(default_factory=list)
-    # Ordered list mirrors the order of SourceInfo entries inside each SensorEntry
-    source_headers: list[tuple[str, str]] = field(default_factory=list)  # [(id, display_name)]
+    # Ordered list mirrors the order of SourceInfo entries inside each SensorEntry.
+    # For rosette groups: [("left", own_rosette_id), ("right", paired_rosette_id)]
+    # For individual groups: [(source_id, display_name), ...]
+    source_headers: list[tuple[str, str]] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ #
@@ -164,9 +172,11 @@ class BucklingGroupWidget(QFrame):
     def _make_title(self) -> str:
         g = self._group
         if g.is_rosette:
-            # e.g. "Rosette_1  (3 sensors)"
-            n = len(g.sensors)
-            return f"{g.pair_id}   ({n} sensor{'s' if n != 1 else ''})"
+            # e.g. "Rosette_1 → Rosette_2   [source_a.csv]"
+            title = g.pair_id
+            if g.source_label:
+                title += f"   [{g.source_label}]"
+            return title
         # Individual: "SensorA_name  Mapping: SensorB_name"
         if g.sensors:
             names = [

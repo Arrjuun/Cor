@@ -1,6 +1,9 @@
 Canonical,Source_A,Source_B,Rosette,Sensor Pair
-Sensor_01,SG_001,STRAIN_A,Rosette_1,Rosette_1
-Sensor_02,SG_002,STRAIN_B,Rosette_1,Rosette_1
-Sensor_03,SG_003,STRAIN_C,Rosette_1,Rosette_1
+Sensor_01,SG_001,STRAIN_A,Rosette_1,Rosette_2
+Sensor_02,SG_002,STRAIN_B,Rosette_1,Rosette_2
+Sensor_03,SG_003,STRAIN_C,Rosette_1,Rosette_2
 Sensor_04,SG_004,STRAIN_D,,Sensor_04
 Sensor_05,SG_005,STRAIN_E,,Sensor_05
+Sensor_06,SG_006,STRAIN_F,Rosette_2,Rosette_1
+Sensor_07,SG_007,STRAIN_G,Rosette_2,Rosette_1
+Sensor_08,SG_008,STRAIN_H,Rosette_2,Rosette_1

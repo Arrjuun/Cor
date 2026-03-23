@@ -245,73 +245,137 @@ class AnalysisPresenter:
         )
 
     def _build_buckling_groups(self) -> list[BucklingGroup]:
-        """Build BucklingGroup objects from mapping sensor-pair data and loaded DataFrames."""
+        """Build BucklingGroup objects from mapping sensor-pair data and loaded DataFrames.
+
+        Rosette groups
+        --------------
+        For each rosette that maps to another rosette (via the Sensor Pair column),
+        one ``BucklingGroup`` is created *per imported source*.  Within each group:
+
+        * Left column  — sensors of the **own** rosette taken from that source.
+        * Right column — sensors of the **paired** rosette taken from the same source.
+
+        The ``source_headers`` use the rosette IDs as column labels rather than
+        source display names, while ``source_label`` carries the source filename
+        for display in the card header.
+
+        Individual groups
+        -----------------
+        Sensors without a rosette keep the original behaviour: one group showing
+        all sources as side-by-side columns.
+        """
         sensor_pairs = self._mapping.sensor_pair_data()   # {canonical: pair_id}
+        rosette_data = self._mapping.rosette_data()        # {canonical: rosette_id}
         all_sources = list(self._data.all_sources())
-
-        # Group canonical names by their Sensor Pair value, preserving insertion order
-        pair_to_canonicals: dict[str, list[str]] = {}
-        for canonical, pair_id in sensor_pairs.items():
-            pair_to_canonicals.setdefault(pair_id, []).append(canonical)
-
-        # Ordered source headers (id, display_name) matching SourceInfo order
-        source_headers = [(s.source_id, s.display_name) for s in all_sources]
-
-        # Default COR labels assigned by position within a group
         _cor_defaults = ["e11", "e12", "e22"]
 
+        # ── Group canonicals by their own rosette ID ──────────────────────
+        rosette_to_canonicals: dict[str, list[str]] = {}
+        for canonical, rosette_id in rosette_data.items():
+            if rosette_id:
+                rosette_to_canonicals.setdefault(rosette_id, []).append(canonical)
+
         groups: list[BucklingGroup] = []
-        for pair_id, canonicals in pair_to_canonicals.items():
-            # Rosette info: any non-empty rosette value makes it a rosette group
-            rosette_vals = {
-                self._mapping.get_rosette(c)
-                for c in canonicals
-                if self._mapping.get_rosette(c)
-            }
-            is_rosette = bool(rosette_vals)
-            rosette_id = next(iter(rosette_vals), "")
 
-            sensors: list[SensorEntry] = []
-            for idx, canonical in enumerate(canonicals):
-                alias_names = set(self._mapping.get_aliases(canonical).values())
+        # ── Rosette groups (one per own-rosette × source) ─────────────────
+        for own_rosette, own_canonicals in rosette_to_canonicals.items():
+            # Determine which rosette the own-rosette maps TO
+            paired_rosette: str | None = None
+            for c in own_canonicals:
+                pair_val = sensor_pairs.get(c, "")
+                if pair_val and pair_val != own_rosette and pair_val in rosette_to_canonicals:
+                    paired_rosette = pair_val
+                    break
 
-                src_infos: list[SourceInfo] = []
-                for src in all_sources:
-                    df = src.df
-                    df_idx_set = set(df.index.astype(str))
-                    found_name: str = "—"
-                    found_data: pd.Series | None = None
-                    for alias in alias_names:
-                        if alias in df_idx_set:
-                            found_name = alias
-                            found_data = df.loc[alias]
-                            break
-                    src_infos.append(SourceInfo(
-                        source_id=src.source_id,
-                        display_name=src.display_name,
-                        sensor_name=found_name,
-                        data=found_data,
+            if paired_rosette is None:
+                continue  # no valid cross-rosette mapping found
+
+            paired_canonicals = rosette_to_canonicals[paired_rosette]
+
+            for src in all_sources:
+                sensors: list[SensorEntry] = []
+                for idx, (own_can, paired_can) in enumerate(
+                    zip(own_canonicals, paired_canonicals)
+                ):
+                    own_name, own_data = self._sensor_in_source(own_can, src)
+                    paired_name, paired_data = self._sensor_in_source(paired_can, src)
+
+                    default_cor = (
+                        _cor_defaults[idx] if idx < len(_cor_defaults)
+                        else f"e{idx + 1}{idx + 1}"
+                    )
+                    sensors.append(SensorEntry(
+                        canonical=own_can,
+                        default_cor=default_cor,
+                        sources=[
+                            SourceInfo(
+                                source_id=src.source_id,
+                                display_name=own_rosette,
+                                sensor_name=own_name,
+                                data=own_data,
+                            ),
+                            SourceInfo(
+                                source_id=src.source_id,
+                                display_name=paired_rosette,
+                                sensor_name=paired_name,
+                                data=paired_data,
+                            ),
+                        ],
                     ))
 
-                default_cor = _cor_defaults[idx] if idx < len(_cor_defaults) else f"e{idx + 1}{idx + 1}"
-                sensors.append(SensorEntry(
-                    canonical=canonical,
-                    default_cor=default_cor,
-                    sources=src_infos,
+                groups.append(BucklingGroup(
+                    pair_id=f"{own_rosette} → {paired_rosette}",
+                    is_rosette=True,
+                    rosette_id=own_rosette,
+                    source_label=src.display_name,
+                    sensors=sensors,
+                    source_headers=[("left", own_rosette), ("right", paired_rosette)],
                 ))
 
+        # ── Individual groups (no rosette, old behaviour) ─────────────────
+        individual_canonicals = [
+            c for c in sensor_pairs if not rosette_data.get(c)
+        ]
+        source_headers_all = [(s.source_id, s.display_name) for s in all_sources]
+
+        for canonical in individual_canonicals:
+            src_infos: list[SourceInfo] = []
+            for src in all_sources:
+                name, data = self._sensor_in_source(canonical, src)
+                src_infos.append(SourceInfo(
+                    source_id=src.source_id,
+                    display_name=src.display_name,
+                    sensor_name=name,
+                    data=data,
+                ))
             groups.append(BucklingGroup(
-                pair_id=pair_id,
-                is_rosette=is_rosette,
-                rosette_id=rosette_id,
-                sensors=sensors,
-                source_headers=source_headers,
+                pair_id=canonical,
+                is_rosette=False,
+                rosette_id="",
+                source_label="",
+                sensors=[SensorEntry(
+                    canonical=canonical,
+                    default_cor="e11",
+                    sources=src_infos,
+                )],
+                source_headers=source_headers_all,
             ))
 
         log.info(
-            "Built %d buckling group(s) (%d rosette, %d individual).",
+            "Built %d buckling group(s) (%d rosette×source, %d individual).",
             len(groups),
             sum(1 for g in groups if g.is_rosette),
             sum(1 for g in groups if not g.is_rosette),
         )
         return groups
+
+    def _sensor_in_source(
+        self, canonical: str, src
+    ) -> tuple[str, pd.Series | None]:
+        """Return ``(sensor_name, data)`` for *canonical* in *src*, or ``("—", None)``."""
+        alias_names = set(self._mapping.get_aliases(canonical).values())
+        df_idx_set = set(src.df.index.astype(str))
+        for alias in alias_names:
+            if alias in df_idx_set:
+                return alias, src.df.loc[alias]
+        return "—", None
