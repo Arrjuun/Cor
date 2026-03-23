@@ -263,16 +263,23 @@ class BucklingGroupWidget(QFrame):
         self._checkbox.setChecked(checked)
 
     def get_selection(self) -> dict:
-        """Return a serialisable dict describing this group's current selection."""
+        """Return a serialisable dict describing this group's current selection.
+
+        ``sources`` is an **ordered list** where index 0 = left column (SUP)
+        and index 1 = right column (INF).  Using a list rather than a
+        ``{source_id: name}`` dict preserves the left/right distinction even
+        when both sides share the same source (rosette groups).
+        """
         rows = []
         for i, entry in enumerate(self._group.sensors):
             cor = self._cor_combos[i].currentText() if i < len(self._cor_combos) else entry.default_cor
             rows.append({
                 "canonical": entry.canonical,
                 "cor": cor,
-                "sources": {
-                    si.source_id: si.sensor_name for si in entry.sources
-                },
+                "sources": [
+                    {"source_id": si.source_id, "sensor_name": si.sensor_name}
+                    for si in entry.sources
+                ],
             })
         return {
             "pair_id": self._group.pair_id,

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..models.data_model import DataModel
@@ -46,71 +47,119 @@ _COR_TYPES = ["e11", "e22", "e12"]
 def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     """Convert checked-group selections to the buckling analysis CSV format.
 
-    The first imported source maps to SUP (superior/simulation) columns and
-    the second to INF (inferior/test-measurement) columns.
+    SUP columns are populated from the **left** side of each dialog row and
+    INF columns from the **right** side, matching the visual layout regardless
+    of which source file each side originates from.
+
+    Load steps are taken as the union of all time values across left and right
+    sensors; values at time points that exist only on one side are linearly
+    interpolated from that side's data.
 
     Parameters
     ----------
     selections:
-        List of group-selection dicts as emitted by ``BucklingDialog.analyze_requested``.
-        Each entry has keys: ``pair_id``, ``is_rosette``, ``rosette_id``, ``sensors``
-        where ``sensors`` is a list of ``{"canonical", "cor", "sources": {sid: name}}``.
+        List of group-selection dicts from ``BucklingDialog.analyze_requested``.
+        ``sensors[*]["sources"]`` is an ordered list where index 0 = left (SUP)
+        and index 1 = right (INF).
     data_model:
-        The application's ``DataModel`` used to look up sensor strain series.
+        Used to look up sensor strain series by source_id and sensor name.
 
     Returns
     -------
     pd.DataFrame with columns ``LoadCase, ElementID, Time,
     SUP_e11, SUP_e22, SUP_e12, INF_e11, INF_e22, INF_e12``.
     """
-    source_ids_ordered = list(data_model.source_ids())
-    sup_id = source_ids_ordered[0] if len(source_ids_ordered) > 0 else None
-    inf_id = source_ids_ordered[1] if len(source_ids_ordered) > 1 else None
-
     rows: list[dict] = []
 
     for group in selections:
-        pair_id = group["pair_id"]
+        # ---- ElementID --------------------------------------------------
+        if group.get("is_rosette") and group.get("rosette_id"):
+            element_id = group["rosette_id"]
+        else:
+            left_info = (group["sensors"][0]["sources"] or [{}])[0] if group["sensors"] else {}
+            name = left_info.get("sensor_name", "")
+            element_id = name if name and name != "—" else group["pair_id"]
 
-        # Build {cor: {source_id: pd.Series}} from the selection
-        cor_series: dict[str, dict[str, pd.Series]] = {}
+        # ---- Collect left (SUP) and right (INF) series per cor ----------
+        # cor_sup / cor_inf: {cor_type: pd.Series}
+        cor_sup: dict[str, pd.Series] = {}
+        cor_inf: dict[str, pd.Series] = {}
+
         for sensor in group["sensors"]:
             cor = sensor["cor"]
-            cor_series.setdefault(cor, {})
-            for source_id, sensor_name in sensor["sources"].items():
-                if not sensor_name or sensor_name == "—":
-                    continue
-                df = data_model.get_dataframe(source_id)
-                if df is None:
-                    continue
-                if sensor_name in df.index:
-                    cor_series[cor][source_id] = df.loc[sensor_name]
+            sources_list: list[dict] = sensor.get("sources", [])
 
-        # Collect all numeric load steps across every series in this group
-        all_load_steps: set[float] = set()
-        for src_dict in cor_series.values():
-            for series in src_dict.values():
-                numeric_ls = [
-                    v for v in series.index
-                    if isinstance(v, (int, float)) and not pd.isna(v)
-                ]
-                all_load_steps.update(numeric_ls)
+            def _fetch(entry: dict) -> pd.Series | None:
+                src_id = entry.get("source_id", "")
+                sname = entry.get("sensor_name", "")
+                if not sname or sname == "—":
+                    return None
+                df = data_model.get_dataframe(src_id)
+                if df is None or sname not in df.index:
+                    return None
+                return df.loc[sname]
 
-        for ls in sorted(all_load_steps):
+            if len(sources_list) > 0:
+                s = _fetch(sources_list[0])
+                if s is not None:
+                    cor_sup[cor] = s
+            if len(sources_list) > 1:
+                s = _fetch(sources_list[1])
+                if s is not None:
+                    cor_inf[cor] = s
+
+        # ---- Union time axis --------------------------------------------
+        all_times: set[float] = set()
+        for series in list(cor_sup.values()) + list(cor_inf.values()):
+            all_times.update(
+                float(v) for v in series.index
+                if isinstance(v, (int, float)) and not pd.isna(v)
+            )
+
+        if not all_times:
+            continue
+
+        sorted_times = sorted(all_times)
+
+        # ---- Pre-interpolate each series onto the common time axis ------
+        def _interp_series(series: pd.Series | None) -> dict[float, float]:
+            """Return {time: value} interpolated onto sorted_times."""
+            if series is None:
+                return {}
+            x = np.array([float(v) for v in series.index
+                          if isinstance(v, (int, float)) and not pd.isna(v)],
+                         dtype=float)
+            y = np.array([series[v] for v in series.index
+                          if isinstance(v, (int, float)) and not pd.isna(v)],
+                         dtype=float)
+            if len(x) == 0:
+                return {}
+            # Only interpolate within the data range; outside → NaN
+            result = {}
+            for t in sorted_times:
+                if t < x[0] or t > x[-1]:
+                    result[t] = float("nan")
+                else:
+                    result[t] = float(np.interp(t, x, y))
+            return result
+
+        sup_lookup: dict[str, dict[float, float]] = {
+            cor: _interp_series(cor_sup.get(cor)) for cor in _COR_TYPES
+        }
+        inf_lookup: dict[str, dict[float, float]] = {
+            cor: _interp_series(cor_inf.get(cor)) for cor in _COR_TYPES
+        }
+
+        # ---- Build rows -------------------------------------------------
+        for t in sorted_times:
             row: dict[str, Any] = {
                 "LoadCase": "LC1",
-                "ElementID": pair_id,
-                "Time": ls,
+                "ElementID": element_id,
+                "Time": t,
             }
             for cor in _COR_TYPES:
-                for prefix, src_id in [("SUP", sup_id), ("INF", inf_id)]:
-                    col = f"{prefix}_{cor}"
-                    val = float("nan")
-                    if src_id and cor in cor_series and src_id in cor_series[cor]:
-                        series = cor_series[cor][src_id]
-                        if ls in series.index:
-                            val = series[ls]
-                    row[col] = val
+                row[f"SUP_{cor}"] = sup_lookup[cor].get(t, float("nan"))
+                row[f"INF_{cor}"] = inf_lookup[cor].get(t, float("nan"))
             rows.append(row)
 
     if rows:
