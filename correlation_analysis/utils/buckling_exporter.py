@@ -151,6 +151,7 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
         }
 
         # ---- Build rows -------------------------------------------------
+        is_rosette = group.get("is_rosette", False)
         for t in sorted_times:
             row: dict[str, Any] = {
                 "LoadCase": "LC1",
@@ -158,8 +159,9 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
                 "Time": t,
             }
             for cor in _COR_TYPES:
-                row[f"SUP_{cor}"] = sup_lookup[cor].get(t, float("nan"))
-                row[f"INF_{cor}"] = inf_lookup[cor].get(t, float("nan"))
+                missing_fill = float("nan") if is_rosette else 0.0
+                row[f"SUP_{cor}"] = sup_lookup[cor].get(t, missing_fill)
+                row[f"INF_{cor}"] = inf_lookup[cor].get(t, missing_fill)
             rows.append(row)
 
     if rows:
