@@ -215,6 +215,12 @@ class TabGraphView(QWidget):
         # Create first default tab
         self.add_tab("Analysis 1")
 
+    def add_raw_tab(self, widget: QWidget, name: str) -> None:
+        """Add an arbitrary widget as a new tab (e.g. buckling onset result tabs)."""
+        self._tab_counter += 1
+        idx = self._tab_widget.addTab(widget, name)
+        self._tab_widget.setCurrentIndex(idx)
+
     def add_tab(self, name: str = "") -> GraphTabContent:
         self._tab_counter += 1
         tab_id = f"tab_{self._tab_counter}"

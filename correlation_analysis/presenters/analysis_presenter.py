@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
-from PySide6.QtWidgets import QInputDialog, QLineEdit, QMessageBox
+from PySide6.QtCore import QEventLoop, QProcess, Qt
+from PySide6.QtWidgets import QInputDialog, QLineEdit, QMessageBox, QProgressDialog
 
 from ..models.data_model import DataModel
 from ..models.formula_engine import FormulaEngine, FormulaError
@@ -215,7 +219,7 @@ class AnalysisPresenter:
         dlg.exec()
 
     def _on_buckling_analyze(self, selections: list) -> None:
-        """Open the export settings dialog, then write the CSV and YAML files."""
+        """Open the export settings dialog, write CSV/YAML, optionally run the script."""
         log.info("Buckling export requested for %d group(s).", len(selections))
 
         export_dlg = BucklingExportDialog(parent=self._view)
@@ -236,13 +240,188 @@ class AnalysisPresenter:
 
         log.info("Buckling CSV written to '%s'.", csv_path)
         log.info("Buckling YAML written to '%s'.", yaml_path)
-        QMessageBox.information(
+
+        if not settings.script_path:
+            QMessageBox.information(
+                self._view,
+                "Export Complete",
+                f"Buckling analysis files written:\n\nCSV:  {csv_path}\nYAML: {yaml_path}",
+            )
+            return
+
+        self._run_buckling_script(settings.script_path, yaml_path, csv_path, settings.output_dir)
+
+    def _run_buckling_script(
+        self,
+        script_path: str,
+        yaml_path: str,
+        input_csv_path: str,
+        output_dir: str,
+    ) -> None:
+        """Launch the external fembuckling_onset script and process its output on success."""
+        script = Path(script_path)
+        if script.suffix.lower() == ".py":
+            program = sys.executable
+            args = [str(script), yaml_path]
+        else:
+            program = str(script)
+            args = [yaml_path]
+
+        progress = QProgressDialog(
+            "Running buckling onset analysis…",
+            "Cancel",
+            0,
+            0,
             self._view,
-            "Export Complete",
-            f"Buckling analysis files written:\n\n"
-            f"CSV:  {csv_path}\n"
-            f"YAML: {yaml_path}",
         )
+        progress.setWindowTitle("Buckling Analysis")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        process = QProcess(self._view)
+        loop = QEventLoop(self._view)
+
+        process.finished.connect(loop.quit)
+        progress.canceled.connect(process.kill)
+        progress.canceled.connect(loop.quit)
+
+        process.start(program, args)
+        if not process.waitForStarted(5000):
+            progress.close()
+            QMessageBox.critical(
+                self._view,
+                "Script Error",
+                f"Could not start the analysis script:\n{script_path}",
+            )
+            return
+
+        progress.show()
+        loop.exec()
+        progress.close()
+
+        exit_code = process.exitCode()
+        if exit_code != 0:
+            stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
+            QMessageBox.critical(
+                self._view,
+                "Script Failed",
+                f"The buckling onset script exited with code {exit_code}.\n\n"
+                f"{stderr[:800]}",
+            )
+            return
+
+        log.info("Buckling onset script finished with exit code 0.")
+        self._load_onset_results(input_csv_path, output_dir)
+
+    def _load_onset_results(self, input_csv_path: str, output_dir: str) -> None:
+        """Find the onset CSV in *output_dir*, parse it, and create per-element onset tabs."""
+        output_path = Path(output_dir)
+
+        # Search for a CSV file in the output directory that has the expected onset columns
+        onset_csv_path: Path | None = None
+        required_cols = {"element_id", "timestep"}
+        for candidate in sorted(output_path.glob("*.csv")):
+            try:
+                header = pd.read_csv(candidate, nrows=0)
+                if required_cols.issubset({c.lower() for c in header.columns}):
+                    onset_csv_path = candidate
+                    break
+            except Exception:
+                continue
+
+        if onset_csv_path is None:
+            QMessageBox.warning(
+                self._view,
+                "No Onset Results",
+                f"No onset results CSV found in:\n{output_dir}\n\n"
+                "The script ran successfully but produced no onset CSV with "
+                "'element_id' and 'timestep' columns.",
+            )
+            return
+
+        log.info("Parsing onset results from '%s'.", onset_csv_path)
+        onset_df = pd.read_csv(onset_csv_path)
+        # Normalise column names to lower-case for robustness
+        onset_df.columns = [c.strip().lower() for c in onset_df.columns]
+
+        try:
+            input_df = pd.read_csv(input_csv_path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self._view,
+                "Read Error",
+                f"Could not read the buckling input CSV:\n{input_csv_path}\n\n{exc}",
+            )
+            return
+
+        # Normalise ElementID column name
+        input_df.columns = [c.strip() for c in input_df.columns]
+        elem_id_col = next(
+            (c for c in input_df.columns if c.lower() == "elementid"),
+            None,
+        )
+        if elem_id_col is None:
+            QMessageBox.critical(
+                self._view,
+                "Format Error",
+                "The buckling input CSV does not contain an 'ElementID' column.",
+            )
+            return
+
+        tab_view = self._view.get_tab_view()
+        count = 0
+
+        for element_id, onset_rows in onset_df.groupby("element_id"):
+            elem_data = input_df[input_df[elem_id_col].astype(str) == str(element_id)]
+            if elem_data.empty:
+                log.warning("No input data rows found for element_id '%s'.", element_id)
+                continue
+
+            # Sort by time to ensure correct line plots
+            time_col = next((c for c in elem_data.columns if c.lower() == "time"), None)
+            if time_col is None:
+                log.warning("No 'Time' column in input CSV for element '%s'.", element_id)
+                continue
+            elem_data = elem_data.sort_values(time_col)
+            time = elem_data[time_col].values.astype(float)
+
+            sup: dict[str, np.ndarray] = {}
+            inf: dict[str, np.ndarray] = {}
+            for comp in ("e11", "e22", "e12"):
+                sup_col = f"SUP_{comp}"
+                inf_col = f"INF_{comp}"
+                if sup_col in elem_data.columns:
+                    sup[comp] = elem_data[sup_col].values.astype(float)
+                if inf_col in elem_data.columns:
+                    inf[comp] = elem_data[inf_col].values.astype(float)
+
+            onset_timesteps = onset_rows["timestep"].tolist()
+
+            from ..views.buckling_onset_widget import BucklingOnsetWidget
+            widget = BucklingOnsetWidget(
+                element_id=str(element_id),
+                time=time,
+                sup=sup,
+                inf=inf,
+                onset_timesteps=onset_timesteps,
+            )
+            tab_view.add_raw_tab(widget, f"Onset: {element_id}")
+            count += 1
+
+        if count == 0:
+            QMessageBox.information(
+                self._view,
+                "No Onset Detected",
+                "The analysis completed but no buckling onset was matched to input data.",
+            )
+        else:
+            QMessageBox.information(
+                self._view,
+                "Onset Analysis Complete",
+                f"Buckling onset detected for {count} element(s).\n"
+                "New tabs have been created for each element.",
+            )
 
     def _build_buckling_groups(self) -> list[BucklingGroup]:
         """Build BucklingGroup objects from mapping sensor-pair data and loaded DataFrames.
