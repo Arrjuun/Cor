@@ -11,11 +11,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QStackedWidget,
     QStatusBar,
+    QToolBar,
     QWidget,
 )
 
 from .import_view import ImportView
 from .analysis_view import AnalysisView
+from .vsg_extraction_dialog import VsgExtractionDialog
 
 VIEW_IMPORT = 0
 VIEW_ANALYSIS = 1
@@ -55,6 +57,23 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
 
+        self._build_toolbar()
+
+    def _build_toolbar(self) -> None:
+        toolbar = QToolBar("Analysis Tools")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        self._buckling_action = QAction("Buckling Analysis", self)
+        self._buckling_action.setToolTip(
+            "Open buckling analysis dialog (requires sensor mapping with Sensor Pair column)"
+        )
+        self._buckling_action.setVisible(False)   # shown only in Analysis view
+        self._buckling_action.triggered.connect(
+            self._analysis_view.buckling_requested.emit
+        )
+        toolbar.addAction(self._buckling_action)
+
     def _build_menu(self) -> None:
         menubar = self.menuBar()
 
@@ -87,6 +106,12 @@ class MainWindow(QMainWindow):
         export_csv_act = QAction("Export to CSV…", self)
         export_csv_act.triggered.connect(self._on_export_csv)
         file_menu.addAction(export_csv_act)
+
+        file_menu.addSeparator()
+
+        vsg_act = QAction("VSG Extraction…", self)
+        vsg_act.triggered.connect(self._on_vsg_extraction)
+        file_menu.addAction(vsg_act)
 
         file_menu.addSeparator()
 
@@ -126,6 +151,7 @@ class MainWindow(QMainWindow):
         if index == VIEW_IMPORT and getattr(self, "_import_locked", False):
             return
         self._stack.setCurrentIndex(index)
+        self._buckling_action.setVisible(index == VIEW_ANALYSIS)
 
     def lock_import_view(self) -> None:
         """Prevent navigation back to the import view (called after proceeding)."""
@@ -181,6 +207,10 @@ class MainWindow(QMainWindow):
         )
         if filepath:
             self.export_csv_requested.emit(filepath)
+
+    def _on_vsg_extraction(self) -> None:
+        dlg = VsgExtractionDialog(self)
+        dlg.exec()
 
     def _on_about(self) -> None:
         QMessageBox.about(

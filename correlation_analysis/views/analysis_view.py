@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -38,6 +37,7 @@ class AnalysisView(QWidget):
     column_delete_requested = Signal(str, list)
     sensor_dropped_to_graph = Signal(dict, object)       # payload, graph widget
     filter_changed = Signal(str)                         # filter text
+    buckling_requested = Signal()                        # open buckling analysis dialog
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -66,6 +66,7 @@ class AnalysisView(QWidget):
         self._filter_edit.setMaximumWidth(200)
         self._filter_edit.textChanged.connect(self.filter_changed)
         left_header.addWidget(self._filter_edit)
+
         left_layout.addLayout(left_header)
 
         scroll = QScrollArea()

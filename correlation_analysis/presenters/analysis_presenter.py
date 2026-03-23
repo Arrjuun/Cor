@@ -1,6 +1,8 @@
 """Analysis View Presenter."""
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 from PySide6.QtWidgets import QInputDialog, QLineEdit, QMessageBox
 
@@ -8,8 +10,13 @@ from ..models.data_model import DataModel
 from ..models.formula_engine import FormulaEngine, FormulaError
 from ..models.graph_data_model import GraphDataModel
 from ..models.sensor_mapping import SensorMapping
+from ..utils.buckling_exporter import write_export
 from ..views.analysis_view import AnalysisView
+from ..views.buckling_dialog import BucklingDialog, BucklingGroup, SensorEntry, SourceInfo
+from ..views.buckling_export_dialog import BucklingExportDialog
 from .graph_presenter import GraphPresenter
+
+log = logging.getLogger(__name__)
 
 
 class AnalysisPresenter:
@@ -37,6 +44,7 @@ class AnalysisPresenter:
         self._view.column_delete_requested.connect(self._on_delete_columns)
         self._view.add_derived_row_requested.connect(self._on_add_derived_row)
         self._view.filter_changed.connect(self._on_filter_changed)
+        self._view.buckling_requested.connect(self._on_buckling_requested)
         self._data.add_observer(self._on_data_changed)
 
     # ------------------------------------------------------------------ #
@@ -169,3 +177,141 @@ class AnalysisPresenter:
     @property
     def graph_presenter(self) -> GraphPresenter:
         return self._graph_presenter
+
+    # ------------------------------------------------------------------ #
+    # Buckling analysis                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _on_buckling_requested(self) -> None:
+        """Build buckling groups from the loaded mapping and open the dialog."""
+        if self._mapping.is_empty():
+            QMessageBox.warning(
+                self._view,
+                "No Mapping",
+                "Please import a sensor mapping file before running buckling analysis.",
+            )
+            return
+
+        if not self._mapping.has_sensor_pair_data():
+            QMessageBox.warning(
+                self._view,
+                "No Sensor Pair Data",
+                "The loaded mapping does not contain a 'Sensor Pair' column.\n\n"
+                "Add a 'Sensor Pair' column to your mapping CSV to enable buckling analysis.",
+            )
+            return
+
+        groups = self._build_buckling_groups()
+        if not groups:
+            QMessageBox.information(
+                self._view,
+                "Buckling Analysis",
+                "No sensor pair groups could be built from the current mapping and data.",
+            )
+            return
+
+        dlg = BucklingDialog(groups, parent=self._view)
+        dlg.analyze_requested.connect(self._on_buckling_analyze)
+        dlg.exec()
+
+    def _on_buckling_analyze(self, selections: list) -> None:
+        """Open the export settings dialog, then write the CSV and YAML files."""
+        log.info("Buckling export requested for %d group(s).", len(selections))
+
+        export_dlg = BucklingExportDialog(parent=self._view)
+        if export_dlg.exec() != BucklingExportDialog.DialogCode.Accepted:
+            return
+
+        settings = export_dlg.get_settings()
+        try:
+            csv_path, yaml_path = write_export(selections, self._data, settings)
+        except Exception as exc:
+            log.exception("Buckling export failed: %s", exc)
+            QMessageBox.critical(
+                self._view,
+                "Export Failed",
+                f"Could not write buckling analysis files:\n{exc}",
+            )
+            return
+
+        log.info("Buckling CSV written to '%s'.", csv_path)
+        log.info("Buckling YAML written to '%s'.", yaml_path)
+        QMessageBox.information(
+            self._view,
+            "Export Complete",
+            f"Buckling analysis files written:\n\n"
+            f"CSV:  {csv_path}\n"
+            f"YAML: {yaml_path}",
+        )
+
+    def _build_buckling_groups(self) -> list[BucklingGroup]:
+        """Build BucklingGroup objects from mapping sensor-pair data and loaded DataFrames."""
+        sensor_pairs = self._mapping.sensor_pair_data()   # {canonical: pair_id}
+        all_sources = list(self._data.all_sources())
+
+        # Group canonical names by their Sensor Pair value, preserving insertion order
+        pair_to_canonicals: dict[str, list[str]] = {}
+        for canonical, pair_id in sensor_pairs.items():
+            pair_to_canonicals.setdefault(pair_id, []).append(canonical)
+
+        # Ordered source headers (id, display_name) matching SourceInfo order
+        source_headers = [(s.source_id, s.display_name) for s in all_sources]
+
+        # Default COR labels assigned by position within a group
+        _cor_defaults = ["e11", "e12", "e22"]
+
+        groups: list[BucklingGroup] = []
+        for pair_id, canonicals in pair_to_canonicals.items():
+            # Rosette info: any non-empty rosette value makes it a rosette group
+            rosette_vals = {
+                self._mapping.get_rosette(c)
+                for c in canonicals
+                if self._mapping.get_rosette(c)
+            }
+            is_rosette = bool(rosette_vals)
+            rosette_id = next(iter(rosette_vals), "")
+
+            sensors: list[SensorEntry] = []
+            for idx, canonical in enumerate(canonicals):
+                alias_names = set(self._mapping.get_aliases(canonical).values())
+
+                src_infos: list[SourceInfo] = []
+                for src in all_sources:
+                    df = src.df
+                    df_idx_set = set(df.index.astype(str))
+                    found_name: str = "—"
+                    found_data: pd.Series | None = None
+                    for alias in alias_names:
+                        if alias in df_idx_set:
+                            found_name = alias
+                            found_data = df.loc[alias]
+                            break
+                    src_infos.append(SourceInfo(
+                        source_id=src.source_id,
+                        display_name=src.display_name,
+                        sensor_name=found_name,
+                        data=found_data,
+                    ))
+
+                default_cor = _cor_defaults[idx] if idx < len(_cor_defaults) else f"e{idx + 1}{idx + 1}"
+                sensors.append(SensorEntry(
+                    canonical=canonical,
+                    default_cor=default_cor,
+                    sources=src_infos,
+                ))
+
+            groups.append(BucklingGroup(
+                pair_id=pair_id,
+                is_rosette=is_rosette,
+                rosette_id=rosette_id,
+                sensors=sensors,
+                source_headers=source_headers,
+            ))
+
+        log.info(
+            "Built %d buckling group(s) (%d rosette, %d individual).",
+            len(groups),
+            sum(1 for g in groups if g.is_rosette),
+            sum(1 for g in groups if not g.is_rosette),
+        )
+        return groups

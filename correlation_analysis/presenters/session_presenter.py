@@ -77,7 +77,7 @@ class SessionPresenter:
             tab_view = self._window.analysis_view.get_tab_view()
             state = {
                 "sources": self._data.to_dict(),
-                "mapping": self._mapping.to_dict(),
+                "mapping": self._mapping.to_session_dict(),
                 "tabs": tab_view.to_config(),
             }
             self._session.save(filepath, state)

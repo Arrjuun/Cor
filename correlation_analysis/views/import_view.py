@@ -573,11 +573,27 @@ class ImportView(QWidget):
         layout.addWidget(btns)
         dlg.exec()
 
-    def show_mapping_dialog(self, mapping_data: dict) -> None:
-        """Show a read-only table of canonical → per-source aliases."""
+    def show_mapping_dialog(
+        self,
+        mapping_data: dict,
+        rosette_data: Optional[dict] = None,
+        sensor_pair_data: Optional[dict] = None,
+    ) -> None:
+        """Show a read-only table of canonical → per-source aliases.
+
+        Args:
+            mapping_data: ``{canonical: {source_col: alias_name}}``
+            rosette_data: Optional ``{canonical: rosette_group_id}``
+            sensor_pair_data: Optional ``{canonical: pair_id}``
+        """
+        from PySide6.QtGui import QColor as _QColor
+
+        rosette_data = rosette_data or {}
+        sensor_pair_data = sensor_pair_data or {}
+
         dlg = QDialog(self)
         dlg.setWindowTitle("Sensor Mapping")
-        dlg.setMinimumSize(640, 420)
+        dlg.setMinimumSize(700, 420)
         layout = QVBoxLayout(dlg)
 
         sources: list[str] = []
@@ -586,12 +602,23 @@ class ImportView(QWidget):
                 if src not in sources:
                     sources.append(src)
 
-        table = QTableWidget(len(mapping_data), 1 + len(sources))
-        headers = ["Canonical Name"] + sources
+        extra_cols: list[str] = []
+        if rosette_data:
+            extra_cols.append("Rosette")
+        if sensor_pair_data:
+            extra_cols.append("Sensor Pair")
+
+        total_cols = 1 + len(sources) + len(extra_cols)
+        table = QTableWidget(len(mapping_data), total_cols)
+        headers = ["Canonical Name"] + sources + extra_cols
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
 
-        from PySide6.QtGui import QColor as _QColor
+        rosette_col_idx = 1 + len(sources) if "Rosette" in extra_cols else -1
+        pair_col_idx = rosette_col_idx + 1 if "Sensor Pair" in extra_cols else -1
+        if "Rosette" not in extra_cols and "Sensor Pair" in extra_cols:
+            pair_col_idx = 1 + len(sources)
+
         for row, (canonical, aliases) in enumerate(mapping_data.items()):
             it = QTableWidgetItem(canonical)
             it.setBackground(_QColor("#E3F2FD"))
@@ -602,13 +629,37 @@ class ImportView(QWidget):
                 if alias == "—":
                     cell.setForeground(_QColor("#BDBDBD"))
                 table.setItem(row, 1 + col_idx, cell)
+            if rosette_col_idx >= 0:
+                val = rosette_data.get(canonical, "")
+                cell = QTableWidgetItem(val if val else "—")
+                if not val:
+                    cell.setForeground(_QColor("#BDBDBD"))
+                else:
+                    cell.setBackground(_QColor("#F3E5F5"))
+                table.setItem(row, rosette_col_idx, cell)
+            if pair_col_idx >= 0:
+                val = sensor_pair_data.get(canonical, "")
+                cell = QTableWidgetItem(val if val else "—")
+                if not val:
+                    cell.setForeground(_QColor("#BDBDBD"))
+                else:
+                    cell.setBackground(_QColor("#E8F5E9"))
+                table.setItem(row, pair_col_idx, cell)
 
         table.resizeColumnsToContents()
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        layout.addWidget(QLabel(
+
+        summary = (
             f"<b>{len(mapping_data)}</b> canonical sensors mapped across "
-            f"<b>{len(sources)}</b> source column(s):"
-        ))
+            f"<b>{len(sources)}</b> source column(s)"
+        )
+        if rosette_data:
+            n_rosettes = len(set(rosette_data.values()))
+            summary += f", <b>{n_rosettes}</b> rosette group(s)"
+        if sensor_pair_data:
+            summary += f", <b>{len(sensor_pair_data)}</b> sensor-pair entr(ies)"
+        summary += "."
+        layout.addWidget(QLabel(summary))
         layout.addWidget(table)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         btns.accepted.connect(dlg.accept)

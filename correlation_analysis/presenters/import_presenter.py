@@ -127,7 +127,11 @@ class ImportPresenter:
         self._view.show_missing_sensors_dialog(unmapped, incomplete)
 
         # Show the full mapping table afterwards
-        self._view.show_mapping_dialog(self._mapping.to_dict())
+        self._view.show_mapping_dialog(
+            self._mapping.to_dict(),
+            rosette_data=self._mapping.rosette_data() or None,
+            sensor_pair_data=self._mapping.sensor_pair_data() or None,
+        )
 
     def on_proceed(self) -> None:
         """Finalize all raw DataFrames (promote row 0 → headers, col 0 → index)."""
@@ -176,7 +180,11 @@ class ImportPresenter:
 
     def _on_view_mapping(self) -> None:
         if not self._mapping.is_empty():
-            self._view.show_mapping_dialog(self._mapping.to_dict())
+            self._view.show_mapping_dialog(
+                self._mapping.to_dict(),
+                rosette_data=self._mapping.rosette_data() or None,
+                sensor_pair_data=self._mapping.sensor_pair_data() or None,
+            )
 
     def _on_scale_strain(self, source_id: str, factor: float) -> None:
         self._data.scale_raw_strain(source_id, factor)
