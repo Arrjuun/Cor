@@ -225,7 +225,10 @@ class SensorTableModel(QAbstractTableModel):
                     indices.append(i)
                     continue
                 mapped = self._mapped_names.get(str(name), "")
-                if pattern.search(mapped):
+                # Search each "|"-separated part so that "^F6[0-9]" anchors
+                # correctly to the start of each individual name token.
+                parts = [p.strip() for p in mapped.split("|")] if mapped else []
+                if any(pattern.search(p) for p in parts):
                     indices.append(i)
         else:
             indices = []
@@ -234,8 +237,9 @@ class SensorTableModel(QAbstractTableModel):
                 if t in sname:
                     indices.append(i)
                     continue
-                mapped = self._mapped_names.get(str(name), "").lower()
-                if t in mapped:
+                mapped = self._mapped_names.get(str(name), "")
+                parts = [p.strip().lower() for p in mapped.split("|")] if mapped else []
+                if any(t in p for p in parts):
                     indices.append(i)
         self._row_indices = indices
 

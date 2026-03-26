@@ -347,10 +347,11 @@ class GraphPresenter:
                     alias_b = next((n for n in aliases.values() if n in visible_b), None)
                     if alias_a and alias_b:
                         visible_canonicals.add(canonical)
-                ratio_df = ratio_df[ratio_df["sensor"].isin(visible_canonicals)]
+                # Filter by canonical column (sensor column now holds alias/display names)
+                ratio_df = ratio_df[ratio_df["canonical"].isin(visible_canonicals)]
             else:
                 visible_common = visible_a & visible_b
-                ratio_df = ratio_df[ratio_df["sensor"].isin(visible_common)]
+                ratio_df = ratio_df[ratio_df["canonical"].isin(visible_common)]
 
         if ratio_df.empty:
             QMessageBox.information(self._view, "Ratio Graph",

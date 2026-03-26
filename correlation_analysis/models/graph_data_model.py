@@ -128,18 +128,37 @@ class GraphDataModel:
                     va = _get_value(df_a, sensor_a, load_step)
                     vb = _get_value(df_b, sensor_b, load_step)
                     ratio = va / vb if vb and not np.isnan(vb) and vb != 0 else np.nan
-                    rows.append({"sensor": canonical, "value_a": va,
-                                 "value_b": vb, "ratio": ratio})
+                    # Prefer the alias name that looks like a valid sensor name
+                    # (11-char naming convention) over the canonical name, so that
+                    # grouping in the ratio graph works correctly.
+                    display = next(
+                        (n for n in (sensor_a, sensor_b) if len(n) == 11),
+                        sensor_a,  # fallback to source-A alias
+                    )
+                    rows.append({
+                        "sensor":    display,
+                        "canonical": canonical,
+                        "value_a":   va,
+                        "value_b":   vb,
+                        "ratio":     ratio,
+                    })
         else:
             common = df_a.index.intersection(df_b.index)
             for sensor in common:
                 va = _get_value(df_a, sensor, load_step)
                 vb = _get_value(df_b, sensor, load_step)
                 ratio = va / vb if vb and not np.isnan(vb) and vb != 0 else np.nan
-                rows.append({"sensor": sensor, "value_a": va,
-                             "value_b": vb, "ratio": ratio})
+                rows.append({
+                    "sensor":    sensor,
+                    "canonical": sensor,
+                    "value_a":   va,
+                    "value_b":   vb,
+                    "ratio":     ratio,
+                })
 
-        return pd.DataFrame(rows, columns=["sensor", "value_a", "value_b", "ratio"])
+        return pd.DataFrame(
+            rows, columns=["sensor", "canonical", "value_a", "value_b", "ratio"]
+        )
 
     def get_all_load_steps(self, source_id: str) -> list[float]:
         df = self._data.get_dataframe(source_id)
