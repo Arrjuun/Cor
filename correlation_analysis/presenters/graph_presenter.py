@@ -415,47 +415,61 @@ class GraphPresenter:
     ) -> None:
         """Add series for each sensor (alias name or canonical) to *graph*.
 
-        Sensors from the ratio graph are now alias names.  We resolve each name
-        to its canonical (via resolve_by_name if needed) so that aliases in all
-        sources are found and plotted.
+        One color is consumed per canonical sensor so that all mapped sources
+        share the same color.  Line style varies by source, matching the
+        behaviour of the single-drop path (_on_sensor_dropped).
         """
-        for source_id in self._data.source_ids():
-            source = self._data.get_source(source_id)
-            if source is None:
+        for sensor_name in sensors:
+            # Build {source_id: actual_name_in_that_source} for this sensor
+            candidates_per_source: dict[str, str] = {}
+
+            if not self._mapping.is_empty():
+                # Try as canonical first; fall back to alias lookup
+                aliases = self._mapping.get_aliases(sensor_name)
+                if not aliases:
+                    canonical = self._mapping.resolve_by_name(sensor_name)
+                    if canonical:
+                        aliases = self._mapping.get_aliases(canonical)
+
+                for source_id in self._data.source_ids():
+                    source = self._data.get_source(source_id)
+                    if source is None:
+                        continue
+                    df_index = set(source.df.index.astype(str))
+                    for candidate in [sensor_name] + list(aliases.values()):
+                        if candidate in df_index:
+                            candidates_per_source[source_id] = candidate
+                            break
+            else:
+                for source_id in self._data.source_ids():
+                    source = self._data.get_source(source_id)
+                    if source is None:
+                        continue
+                    if sensor_name in set(source.df.index.astype(str)):
+                        candidates_per_source[source_id] = sensor_name
+
+            if not candidates_per_source:
                 continue
-            df_index = set(source.df.index.astype(str))
 
-            for sensor_name in sensors:
-                candidates = [sensor_name]
-                if not self._mapping.is_empty():
-                    aliases = self._mapping.get_aliases(sensor_name)
-                    if aliases:
-                        # sensor_name is already a canonical key
-                        candidates.extend(aliases.values())
-                    else:
-                        # sensor_name is an alias — resolve to canonical first
-                        canonical = self._mapping.resolve_by_name(sensor_name)
-                        if canonical:
-                            candidates.extend(
-                                self._mapping.get_aliases(canonical).values()
-                            )
+            # One color shared across all sources for this canonical sensor
+            color = graph.consume_next_color()
 
-                for candidate in candidates:
-                    if candidate in df_index:
-                        try:
-                            x, y = self._graph_data.get_loadstep_series(
-                                source_id, candidate
-                            )
-                            color = graph.consume_next_color()
-                            style = SeriesStyle(
-                                color=color,
-                                line_style=self._source_line_style(source_id),
-                                label=candidate,
-                            )
-                            graph.add_series(candidate, source_id, x, y, style)
-                        except ValueError:
-                            pass
-                        break
+            for source_id, candidate in candidates_per_source.items():
+                try:
+                    x, y = self._graph_data.get_loadstep_series(source_id, candidate)
+                    src_obj = self._data.get_source(source_id)
+                    label = (
+                        f"{candidate} ({src_obj.display_name})"
+                        if src_obj else candidate
+                    )
+                    style = SeriesStyle(
+                        color=color,
+                        line_style=self._source_line_style(source_id),
+                        label=label,
+                    )
+                    graph.add_series(candidate, source_id, x, y, style)
+                except ValueError:
+                    pass
 
     # ------------------------------------------------------------------ #
     # Session restore                                                      #

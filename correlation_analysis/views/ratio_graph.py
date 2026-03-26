@@ -241,7 +241,8 @@ class RatioGraphWidget(QWidget):
         self._label_b: str = "Source B"
         self._load_step: float = 0.0
         self._selected_indices: set[int] = set()
-        self._ref_lines: list = []
+        self._diagonal_line = None                 # permanent 1:1 reference line
+        self._ref_bands: list[dict] = []           # {"pct": float, "lines": [pos, neg]}
         self._group_keys: list[str] = []          # parallel to _scatter_items
         self._group_styles: dict[str, dict] = {}  # group_key → {color, symbol}
         self._box_selecting = False
@@ -274,9 +275,10 @@ class RatioGraphWidget(QWidget):
         self._slope_btn.clicked.connect(self._ask_reference_band)
         toolbar.addWidget(self._slope_btn)
 
-        self._clear_ref_btn = QPushButton("Clear Refs")
+        self._clear_ref_btn = QPushButton("Clear Refs ▾")
         self._clear_ref_btn.setCheckable(False)
-        self._clear_ref_btn.clicked.connect(self.clear_reference_lines)
+        self._clear_ref_btn.setToolTip("Clear reference bands (diagonal is always kept)")
+        self._clear_ref_btn.clicked.connect(self._show_clear_refs_menu)
         toolbar.addWidget(self._clear_ref_btn)
 
         toolbar.addStretch()
@@ -379,6 +381,12 @@ class RatioGraphWidget(QWidget):
                 pass
 
         self.clear_reference_lines()
+        if self._diagonal_line is not None:
+            try:
+                self._plot.removeItem(self._diagonal_line)
+            except Exception:
+                pass
+            self._diagonal_line = None
         if self._hover_label.scene() is not None:
             self._plot.removeItem(self._hover_label)
 
@@ -436,15 +444,16 @@ class RatioGraphWidget(QWidget):
             self._scatter_group_colors.append(color)
             self._group_keys.append(group_key)
 
-            brushes = [pg.mkBrush(color)] * len(indices)
-            pens    = [pg.mkPen(color=color, width=1, cosmetic=True)] * len(indices)
-
+            # Single pen/brush so pyqtgraph stores a scalar in opts — the legend
+            # reads opts['brush']/opts['pen'] to draw its sample, and a list there
+            # breaks the colour display.  Per-spot overrides (selection) are applied
+            # later via SpotItem.setBrush which only touches per-spot data.
             scatter = pg.ScatterPlotItem(
                 x=x_vals, y=y_vals,
                 size=10,
                 symbol=symbol,
-                pen=pens,
-                brush=brushes,
+                pen=pg.mkPen(color=color, width=1, cosmetic=True),
+                brush=pg.mkBrush(color),
                 data=spot_data,
                 hoverable=False,
             )
@@ -474,7 +483,7 @@ class RatioGraphWidget(QWidget):
             pen=pg.mkPen(color="#9E9E9E", width=1, style=Qt.PenStyle.DashLine, cosmetic=True),
             name="1:1 line",
         )
-        self._ref_lines.append(ref_line)
+        self._diagonal_line = ref_line
 
         self._plot.enableAutoRange()
 
@@ -504,12 +513,37 @@ class RatioGraphWidget(QWidget):
                                    name=f"+{pct:.0f}%")
         line_neg = self._plot.plot(ref_x, ref_x * factor_neg, pen=band_pen,
                                    name=f"-{pct:.0f}%")
-        self._ref_lines.extend([line_pos, line_neg])
+        self._ref_bands.append({"pct": pct, "lines": [line_pos, line_neg]})
 
     def clear_reference_lines(self) -> None:
-        for line in self._ref_lines:
+        """Clear all reference bands (the 1:1 diagonal is preserved)."""
+        for band in self._ref_bands:
+            for line in band["lines"]:
+                self._plot.removeItem(line)
+        self._ref_bands.clear()
+
+    def _clear_band(self, index: int) -> None:
+        """Remove a single reference band by its index in _ref_bands."""
+        if index < 0 or index >= len(self._ref_bands):
+            return
+        for line in self._ref_bands[index]["lines"]:
             self._plot.removeItem(line)
-        self._ref_lines.clear()
+        self._ref_bands.pop(index)
+
+    def _show_clear_refs_menu(self) -> None:
+        menu = QMenu(self)
+        if not self._ref_bands:
+            act = menu.addAction("No reference bands added")
+            act.setEnabled(False)
+        else:
+            clear_all = menu.addAction("Clear All Bands")
+            clear_all.triggered.connect(self.clear_reference_lines)
+            menu.addSeparator()
+            for i, band in enumerate(self._ref_bands):
+                pct = band["pct"]
+                act = menu.addAction(f"Remove ±{pct:.0f}% band")
+                act.triggered.connect(lambda checked=False, idx=i: self._clear_band(idx))
+        menu.exec(self._clear_ref_btn.mapToGlobal(self._clear_ref_btn.rect().bottomLeft()))
 
     def get_selected_sensors(self) -> list[str]:
         return [self._sensors[i] for i in sorted(self._selected_indices)
@@ -712,19 +746,19 @@ class RatioGraphWidget(QWidget):
         self._update_scatter_colors()
 
     def _update_scatter_colors(self) -> None:
-        """Repaint all scatter items: selected points red, others their group colour."""
+        """Repaint all scatter items: selected points red, others their group colour.
+
+        Uses SpotItem.setBrush (per-spot) so that opts['brush'] — which the legend
+        reads — is never replaced with a list.
+        """
         for scatter, group_color in zip(self._scatter_items, self._scatter_group_colors):
-            spots = scatter.points()
-            brushes = []
-            for spot in spots:
+            for spot in scatter.points():
                 d = spot.data()
                 orig_idx = d.get("orig_idx", -1) if isinstance(d, dict) else -1
-                brushes.append(
+                spot.setBrush(
                     pg.mkBrush("#F44336") if orig_idx in self._selected_indices
                     else pg.mkBrush(group_color)
                 )
-            if brushes:
-                scatter.setBrush(brushes)
 
     def _show_selection_menu(self, global_pos: QPoint) -> None:
         menu = QMenu(self)
@@ -820,7 +854,11 @@ class RatioGraphWidget(QWidget):
             self._apply_group_styles()
 
     def _apply_group_styles(self) -> None:
-        """Reapply stored group styles (color + symbol) to all scatter items."""
+        """Reapply stored group styles (color + symbol) to all scatter items.
+
+        Item-level setBrush/setPen (single value) update opts so the legend
+        reflects the new colour.  Per-spot overrides handle selection state.
+        """
         for scatter, key in zip(self._scatter_items, self._group_keys):
             style  = self._group_styles.get(key, {"color": "#1565C0", "symbol": "o"})
             color  = style["color"]
@@ -831,23 +869,21 @@ class RatioGraphWidget(QWidget):
             if idx < len(self._scatter_group_colors):
                 self._scatter_group_colors[idx] = color
 
-            spots = scatter.points()
-            brushes = []
-            pens    = []
-            for spot in spots:
+            # Item-level update → legend reads these opts
+            scatter.setBrush(pg.mkBrush(color))
+            scatter.setPen(pg.mkPen(color=color, width=1, cosmetic=True))
+            scatter.setSymbol(symbol)
+
+            # Per-spot update → respects current selection state
+            for spot in scatter.points():
                 d = spot.data()
                 orig_idx = d.get("orig_idx", -1) if isinstance(d, dict) else -1
                 if orig_idx in self._selected_indices:
-                    brushes.append(pg.mkBrush("#F44336"))
-                    pens.append(pg.mkPen(color="#F44336", width=1, cosmetic=True))
+                    spot.setBrush(pg.mkBrush("#F44336"))
+                    spot.setPen(pg.mkPen(color="#F44336", width=1, cosmetic=True))
                 else:
-                    brushes.append(pg.mkBrush(color))
-                    pens.append(pg.mkPen(color=color, width=1, cosmetic=True))
-
-            if brushes:
-                scatter.setBrush(brushes)
-                scatter.setPen(pens)
-            scatter.setSymbol(symbol)
+                    spot.setBrush(pg.mkBrush(color))
+                    spot.setPen(pg.mkPen(color=color, width=1, cosmetic=True))
 
     # ------------------------------------------------------------------ #
     # Outer widget drop fallback                                           #
