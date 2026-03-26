@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -241,7 +240,7 @@ class AnalysisPresenter:
         log.info("Buckling CSV written to '%s'.", csv_path)
         log.info("Buckling YAML written to '%s'.", yaml_path)
 
-        if not settings.script_path:
+        if not settings.python_exe_path:
             QMessageBox.information(
                 self._view,
                 "Export Complete",
@@ -249,23 +248,18 @@ class AnalysisPresenter:
             )
             return
 
-        self._run_buckling_script(settings.script_path, yaml_path, csv_path, settings.output_dir)
+        self._run_buckling_script(settings.python_exe_path, yaml_path, csv_path, settings.output_dir)
 
     def _run_buckling_script(
         self,
-        script_path: str,
+        python_exe_path: str,
         yaml_path: str,
         input_csv_path: str,
         output_dir: str,
     ) -> None:
-        """Launch the external fembuckling_onset script and process its output on success."""
-        script = Path(script_path)
-        if script.suffix.lower() == ".py":
-            program = sys.executable
-            args = [str(script), yaml_path]
-        else:
-            program = str(script)
-            args = [yaml_path]
+        """Launch fembuckling.onset via the specified Python executable and process its output."""
+        program = python_exe_path
+        args = ["-m", "fembuckling.onset", yaml_path]
 
         progress = QProgressDialog(
             "Running buckling onset analysis…",
@@ -292,7 +286,8 @@ class AnalysisPresenter:
             QMessageBox.critical(
                 self._view,
                 "Script Error",
-                f"Could not start the analysis script:\n{script_path}",
+                f"Could not start the Python executable:\n{python_exe_path}\n\n"
+                "Ensure the path is correct and the fembuckling package is installed.",
             )
             return
 

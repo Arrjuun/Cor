@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QProcess, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,9 +18,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpacerItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -34,6 +38,12 @@ DEFAULTS = {
     "angle_step": 10,
 }
 
+# Path to vsg_extraction.py relative to this file:
+#   views/ -> correlation_analysis/ -> vsg_extraction/vsg_extraction.py
+_SCRIPT_PATH = (
+    Path(__file__).parent.parent / "vsg_extraction" / "vsg_extraction.py"
+).resolve()
+
 
 class VsgExtractionDialog(QDialog):
     """Dialog for VSG extraction configuration and execution."""
@@ -41,8 +51,9 @@ class VsgExtractionDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("VSG Extraction")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(560)
         self._input_file: str = ""
+        self._process: Optional[QProcess] = None
         self._build_ui()
         self._update_extract_button()
 
@@ -109,6 +120,21 @@ class VsgExtractionDialog(QDialog):
         self._advanced_panel.setVisible(False)
         root.addWidget(self._advanced_panel)
 
+        # ---- Output panel ----
+        self._output_group = QGroupBox("Output")
+        output_layout = QVBoxLayout(self._output_group)
+        output_layout.setContentsMargins(8, 8, 8, 8)
+
+        self._output_edit = QTextEdit()
+        self._output_edit.setReadOnly(True)
+        self._output_edit.setMinimumHeight(120)
+        self._output_edit.setFont(self._output_edit.font())  # monospace via stylesheet
+        self._output_edit.setStyleSheet("font-family: Consolas, monospace; font-size: 11px;")
+        output_layout.addWidget(self._output_edit)
+
+        self._output_group.setVisible(False)
+        root.addWidget(self._output_group)
+
         # ---- Bottom row: Extract (left) | Advanced checkbox (right) ----
         bottom_row = QHBoxLayout()
 
@@ -173,6 +199,10 @@ class VsgExtractionDialog(QDialog):
         self._update_extract_button()
 
     def _on_extract(self) -> None:
+        if self._process and self._process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.warning(self, "Busy", "An extraction is already running.")
+            return
+
         version = self._version_combo.currentText()
         advanced = self._advanced_chk.isChecked()
 
@@ -189,19 +219,101 @@ class VsgExtractionDialog(QDialog):
             angle_step = str(DEFAULTS["angle_step"])
             print_vsg = False
 
-        logger.info("VSG Extraction requested")
-        logger.info("  Abaqus Version   : %s", version)
-        logger.info("  Input File       : %s", self._input_file)
-        logger.info("  Advanced         : %s", advanced)
-        logger.info("  Component Index  : %s", component_index)
-        logger.info("  Radius Tolerance : %s", radius_tolerance)
-        logger.info("  Intervals        : %s", intervals)
-        logger.info("  Angle Step       : %s", angle_step)
-        logger.info("  Print VSG        : %s", print_vsg)
+        args = self._build_abaqus_args(
+            version=version,
+            input_file=self._input_file,
+            component_index=component_index,
+            radius_tolerance=radius_tolerance,
+            intervals=intervals,
+            angle_step=angle_step,
+            print_vsg=print_vsg,
+        )
+
+        logger.info("Launching: abaqus %s", " ".join(args))
+        self._output_edit.clear()
+        self._output_group.setVisible(True)
+        self._append_output(f"$ abaqus {' '.join(args)}\n")
+
+        self._extract_btn.setEnabled(False)
+
+        self._process = QProcess(self)
+        self._process.setWorkingDirectory(os.getcwd())
+        self._process.readyReadStandardOutput.connect(self._on_stdout)
+        self._process.readyReadStandardError.connect(self._on_stderr)
+        self._process.finished.connect(self._on_process_finished)
+
+        self._process.start("abaqus", args)
+
+        if not self._process.waitForStarted(3000):
+            self._append_output("[ERROR] Failed to start abaqus process.\n")
+            logger.error("Failed to start abaqus process")
+            self._extract_btn.setEnabled(True)
+
+    def _on_stdout(self) -> None:
+        if self._process:
+            text = bytes(self._process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            self._append_output(text)
+
+    def _on_stderr(self) -> None:
+        if self._process:
+            text = bytes(self._process.readAllStandardError()).decode("utf-8", errors="replace")
+            self._append_output(text)
+
+    def _on_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
+        if exit_status == QProcess.ExitStatus.NormalExit and exit_code == 0:
+            self._append_output("\n[Process completed successfully]\n")
+            logger.info("VSG extraction process finished (exit code 0)")
+        else:
+            self._append_output(f"\n[Process exited with code {exit_code}]\n")
+            logger.warning("VSG extraction process finished with exit code %d", exit_code)
+        self._update_extract_button()
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _build_abaqus_args(
+        version: str,
+        input_file: str,
+        component_index: str,
+        radius_tolerance: str,
+        intervals: str,
+        angle_step: str,
+        print_vsg: bool,
+    ) -> list[str]:
+        """Build the argument list for the abaqus process.
+
+        Mirrors the C# launcher:
+            abaqus [--version=<ver>] python <script> <file> [advanced args...]
+        """
+        args: list[str] = []
+
+        if version:
+            args.append(f"--version={version}")
+
+        args.extend([
+            "python",
+            str(_SCRIPT_PATH),
+            input_file,
+            f"--component-index={component_index}",
+            f"--radius-tolerance={radius_tolerance}",
+            f"--intervals={intervals}",
+            f"--angle-step={angle_step}",
+        ])
+
+        if print_vsg:
+            args.append("--print-vsg")
+
+        return args
+
+    def _append_output(self, text: str) -> None:
+        self._output_edit.moveCursor(self._output_edit.textCursor().MoveOperation.End)
+        self._output_edit.insertPlainText(text)
+        self._output_edit.ensureCursorVisible()
+
     def _update_extract_button(self) -> None:
-        self._extract_btn.setEnabled(bool(self._input_file))
+        running = bool(
+            self._process and self._process.state() != QProcess.ProcessState.NotRunning
+        )
+        self._extract_btn.setEnabled(bool(self._input_file) and not running)

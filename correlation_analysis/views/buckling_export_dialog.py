@@ -128,15 +128,15 @@ class BucklingExportDialog(QDialog):
 
         layout.addWidget(params_box)
 
-        # ---- Script execution ----
-        script_box = QGroupBox("Run Analysis Script (optional)")
+        # ---- Python executable ----
+        script_box = QGroupBox("Run Analysis (optional)")
         script_form = QFormLayout(script_box)
         script_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         script_row = QHBoxLayout()
         self._script_edit = QLineEdit()
         self._script_edit.setPlaceholderText(
-            "Path to fembuckling_onset script (.py or executable) — leave blank to export only"
+            "Full path to python.exe with fembuckling installed — leave blank to export only"
         )
         script_browse = QPushButton("Browse…")
         script_browse.setCheckable(False)
@@ -144,7 +144,7 @@ class BucklingExportDialog(QDialog):
         script_browse.clicked.connect(self._browse_script)
         script_row.addWidget(self._script_edit)
         script_row.addWidget(script_browse)
-        script_form.addRow("Script path:", script_row)
+        script_form.addRow("Python executable:", script_row)
 
         layout.addWidget(script_box)
 
@@ -179,8 +179,8 @@ class BucklingExportDialog(QDialog):
     def _browse_script(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Analysis Script",
-            filter="Python Scripts (*.py);;Executables (*.exe *.bat);;All Files (*)",
+            "Select Python Executable",
+            filter="Executables (*.exe);;All Files (*)",
         )
         if path:
             self._script_edit.setText(path)
@@ -213,7 +213,7 @@ class BucklingExportDialog(QDialog):
             polyorder=self._polyorder.value(),
             acceleration_jerk_threshold=self._jerk_threshold.value(),
             min_principal_magnitude_threshold=self._magnitude_threshold.value(),
-            script_path=self._script_edit.text().strip(),
+            python_exe_path=self._script_edit.text().strip(),
         )
 
 
