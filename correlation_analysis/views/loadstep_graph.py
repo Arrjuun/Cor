@@ -194,6 +194,8 @@ class LoadStepGraphWidget(QWidget):
         sym_pen = _make_symbol_pen(style.color)
         sym_brush = _make_symbol_brush(style.color)
 
+        sym_size = 5 + style.thickness * 2
+
         if key in self._series:
             item = self._series[key]["item"]
             # Use setData with all style kwargs for reliable update
@@ -203,7 +205,7 @@ class LoadStepGraphWidget(QWidget):
                 symbol=symbol,
                 symbolPen=sym_pen,
                 symbolBrush=sym_brush,
-                symbolSize=7,
+                symbolSize=sym_size,
             )
             item.setVisible(style.visible)
         else:
@@ -213,7 +215,7 @@ class LoadStepGraphWidget(QWidget):
                 symbol=symbol,
                 symbolPen=sym_pen,
                 symbolBrush=sym_brush,
-                symbolSize=7,
+                symbolSize=sym_size,
                 name=style.label or sensor_name,
             )
 
@@ -263,6 +265,12 @@ class LoadStepGraphWidget(QWidget):
         s = self._series[key]
         new_style = SeriesStyle(**{**s["style"].__dict__, "visible": not s["style"].visible})
         self.add_series(s["sensor_name"], s["source_id"], s["x"], s["y"], new_style)
+
+    def consume_next_color(self) -> str:
+        """Return the next auto-color and advance the internal counter."""
+        color = _COLORS[self._color_idx % len(_COLORS)]
+        self._color_idx += 1
+        return color
 
     def series_keys(self) -> list[str]:
         return list(self._series.keys())

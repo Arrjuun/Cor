@@ -168,9 +168,9 @@ class AnalysisPresenter:
         if widget:
             widget.add_derived_row(name, position=df_pos)
 
-    def _on_filter_changed(self, text: str) -> None:
+    def _on_filter_changed(self, text: str, regex: bool = False) -> None:
         """Filter is handled in each SensorTableModel using sensor name + mapped names."""
-        self._view.set_table_filter(text)
+        self._view.set_table_filter(text, regex)
 
     def _on_data_changed(self, event: str, source_id: str) -> None:
         if event in ("updated", "loaded") and source_id:

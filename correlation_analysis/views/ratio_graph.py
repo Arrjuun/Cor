@@ -25,12 +25,109 @@ from .customization_dialog import CustomizationDialog, SeriesStyle, LINE_STYLE_M
 
 _MIME_COL = "application/x-loadstep-column"
 
+# ------------------------------------------------------------------ #
+# Sensor name nomenclature parsing                                    #
+# ------------------------------------------------------------------ #
+# Pattern (11 chars):
+#   [0]    Element   : C D F K P Q R S T V W X H I U
+#   [1-2]  Frame     : 2 digits
+#   [3]    L/R       : L (LHS) or R (RHS)
+#   [4-5]  Stringer  : 2 digits (led by 0)
+#   [6]    N/P       : N (non-pressurised) or P (pressurised)
+#   [7]    Location  : I O W F H
+#   [8-9]  Counter   : 2 digits (led by 0)
+#   [10]   Direction : L T A B C
+#
+# Group key = [0] + [3] + [6] + [7] + [10]
+#   e.g.  "FLNIL" = Frame / LHS / Non-press / Inner-flange / Longitudinal
+
+_ELEMENT_CHARS = set("CDFKPQRSTVWXHIU")
+_LR_CHARS      = {"L", "R"}
+_NP_CHARS      = {"N", "P"}
+_LOC_CHARS     = {"I", "O", "W", "F", "H"}
+_DIR_CHARS     = {"L", "T", "A", "B", "C"}
+
+_ELEMENT_NAMES = {
+    "C": "Clip", "D": "Door", "F": "Frame", "K": "Coupling",
+    "P": "Stringer", "Q": "Cross beam", "R": "Rail", "S": "Skin",
+    "T": "Sarma Rods", "V": "Buttstrap", "W": "Window", "X": "X-Paddel",
+    "H": "Hinge/Lintel", "I": "Intercostals", "U": "Sill Unit",
+}
+_LR_NAMES  = {"L": "LHS",   "R": "RHS"}
+_NP_NAMES  = {"N": "NP",    "P": "PP"}
+_LOC_NAMES = {"I": "Inner", "O": "Outer", "W": "Web", "F": "Foot", "H": "Head"}
+_DIR_NAMES = {"L": "Long",  "T": "Trans", "A": "0°", "B": "45°",  "C": "90°"}
+
+# Distinct colour palette for groups
+_GROUP_PALETTE = [
+    "#1565C0",  # blue
+    "#C62828",  # red
+    "#2E7D32",  # green
+    "#6A1B9A",  # purple
+    "#E65100",  # deep orange
+    "#00695C",  # teal
+    "#AD1457",  # pink
+    "#37474F",  # blue-grey
+    "#F9A825",  # amber
+    "#0277BD",  # light blue
+    "#558B2F",  # light green
+    "#4527A0",  # deep purple
+    "#880E4F",  # dark pink
+    "#006064",  # dark cyan
+    "#BF360C",  # deep orange dark
+]
+
+
+def _parse_sensor_group(sensor: str) -> Optional[str]:
+    """Return 5-char group key if *sensor* matches the 11-char naming convention.
+
+    Group key: Element[0] + L/R[3] + N/P[6] + Location[7] + Direction[10]
+    Returns None if the name does not match the pattern.
+    """
+    if len(sensor) != 11:
+        return None
+    if sensor[0] not in _ELEMENT_CHARS:
+        return None
+    if not sensor[1:3].isdigit():
+        return None
+    if sensor[3] not in _LR_CHARS:
+        return None
+    if not sensor[4:6].isdigit():
+        return None
+    if sensor[6] not in _NP_CHARS:
+        return None
+    if sensor[7] not in _LOC_CHARS:
+        return None
+    if not sensor[8:10].isdigit():
+        return None
+    if sensor[10] not in _DIR_CHARS:
+        return None
+    return sensor[0] + sensor[3] + sensor[6] + sensor[7] + sensor[10]
+
+
+def _group_label(key: str) -> str:
+    """Human-readable legend label for a 5-char group key."""
+    if len(key) != 5:
+        return key
+    e, lr, np_, loc, d = key
+    return (
+        f"{_ELEMENT_NAMES.get(e, e)} "
+        f"{_LR_NAMES.get(lr, lr)} "
+        f"{_NP_NAMES.get(np_, np_)} "
+        f"{_LOC_NAMES.get(loc, loc)} "
+        f"{_DIR_NAMES.get(d, d)}"
+    )
+
 
 class RatioGraphWidget(QWidget):
     """
     Ratio graph: X=Strain A, Y=Strain B, one point per sensor.
     Accepts drag-and-drop of load-step columns.
     Supports toolbar-toggled box selection of points.
+
+    When sensor names match the 11-char naming convention, points are
+    grouped by (Element, L/R, N/P, Location, Direction) and rendered
+    as separate scatter series with distinct colours and a legend.
     """
 
     loadstep_dropped = Signal(dict)               # MIME payload
@@ -43,7 +140,10 @@ class RatioGraphWidget(QWidget):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self._title = title
-        self._scatter: Optional[pg.ScatterPlotItem] = None
+        # Multiple scatter items: one per sensor group (or one if no pattern matches)
+        self._scatter_items: list[pg.ScatterPlotItem] = []
+        self._scatter_group_colors: list[str] = []   # parallel to _scatter_items
+        self._legend: Optional[pg.LegendItem] = None
         self._sensors: list[str] = []
         self._values_a: list[float] = []
         self._values_b: list[float] = []
@@ -151,6 +251,9 @@ class RatioGraphWidget(QWidget):
     ) -> None:
         """
         Plot Strain A (X) vs Strain B (Y), one point per sensor.
+        If sensor names match the 11-char naming convention, separate scatter
+        series are created for each unique (Element, L/R, N/P, Location, Direction)
+        combination with distinct colours and a legend.
         Includes a 1:1 reference line.
         """
         self._sensors = list(sensors)
@@ -167,45 +270,86 @@ class RatioGraphWidget(QWidget):
             i for i, (a, b) in enumerate(zip(values_a, values_b))
             if not (np.isnan(float(a)) or np.isnan(float(b)))
         ]
-
         if not valid_idx:
             return
 
-        x_vals = np.array([values_a[i] for i in valid_idx], dtype=float)
-        y_vals = np.array([values_b[i] for i in valid_idx], dtype=float)
+        # ---- Clear old scatter items ----
+        for item in self._scatter_items:
+            self._plot.removeItem(item)
+        self._scatter_items.clear()
+        self._scatter_group_colors.clear()
 
-        # Per-point data for hover tooltips
-        spot_data = [
-            {
-                "sensor": sensors[i],
-                "strain_a": values_a[i],
-                "strain_b": values_b[i],
-                "ratio": ratios[i] if not np.isnan(float(ratios[i])) else float("nan"),
-                "orig_idx": i,
-            }
-            for i in valid_idx
-        ]
+        # ---- Clear legend ----
+        if self._legend is not None:
+            try:
+                self._legend.clear()
+            except Exception:
+                pass
 
-        if self._scatter is not None:
-            self._plot.removeItem(self._scatter)
-            self._scatter = None
-        # Remove old reference lines and hover label
         self.clear_reference_lines()
         if self._hover_label.scene() is not None:
             self._plot.removeItem(self._hover_label)
 
-        brushes = [pg.mkBrush("#1565C0")] * len(valid_idx)
-        pens = [pg.mkPen(color="#1565C0", width=1, cosmetic=True)] * len(valid_idx)
+        # ---- Group sensors by naming convention ----
+        groups: dict[str, list[int]] = {}
+        for i in valid_idx:
+            key = _parse_sensor_group(sensors[i]) or "Other"
+            groups.setdefault(key, []).append(i)
 
-        self._scatter = pg.ScatterPlotItem(
-            x=x_vals, y=y_vals,
-            size=10,
-            pen=pens,
-            brush=brushes,
-            data=spot_data,
-            hoverable=False,  # we handle hover ourselves
-        )
-        self._plot.addItem(self._scatter)
+        named_keys = [k for k in groups if k != "Other"]
+        use_grouping = len(named_keys) > 0 and len(groups) > 1
+
+        # ---- Manage legend ----
+        if use_grouping:
+            if self._legend is None:
+                self._legend = self._plot.addLegend(offset=(10, 10))
+            self._legend.setVisible(True)
+        else:
+            if self._legend is not None:
+                self._legend.setVisible(False)
+
+        # ---- Build scatter series ----
+        sorted_groups = sorted(groups.items()) if use_grouping else [("", valid_idx)]
+        x_all: list[np.ndarray] = []
+        y_all: list[np.ndarray] = []
+
+        for gi, (group_key, indices) in enumerate(sorted_groups):
+            x_vals = np.array([values_a[i] for i in indices], dtype=float)
+            y_vals = np.array([values_b[i] for i in indices], dtype=float)
+            x_all.append(x_vals)
+            y_all.append(y_vals)
+
+            spot_data = [
+                {
+                    "sensor": sensors[i],
+                    "strain_a": values_a[i],
+                    "strain_b": values_b[i],
+                    "ratio": ratios[i] if not np.isnan(float(ratios[i])) else float("nan"),
+                    "orig_idx": i,
+                }
+                for i in indices
+            ]
+
+            color = _GROUP_PALETTE[gi % len(_GROUP_PALETTE)]
+            self._scatter_group_colors.append(color)
+
+            brushes = [pg.mkBrush(color)] * len(indices)
+            pens    = [pg.mkPen(color=color, width=1, cosmetic=True)] * len(indices)
+
+            scatter = pg.ScatterPlotItem(
+                x=x_vals, y=y_vals,
+                size=10,
+                pen=pens,
+                brush=brushes,
+                data=spot_data,
+                hoverable=False,
+            )
+            self._scatter_items.append(scatter)
+            self._plot.addItem(scatter)
+
+            if use_grouping and self._legend is not None:
+                label = _group_label(group_key) if group_key != "Other" else "Other"
+                self._legend.addItem(scatter, label)
 
         # Re-add hover label on top
         self._plot.addItem(self._hover_label)
@@ -213,11 +357,11 @@ class RatioGraphWidget(QWidget):
 
         # Axes labels
         self._plot.setLabel("bottom", f"Strain — {label_a}")
-        self._plot.setLabel("left", f"Strain — {label_b}")
+        self._plot.setLabel("left",   f"Strain — {label_b}")
         self._plot.setTitle(f"Strain Correlation @ Load Step {load_step}")
 
         # 1:1 reference line (Y = X)
-        all_vals = np.concatenate([x_vals, y_vals])
+        all_vals = np.concatenate(x_all + y_all)
         lo, hi = float(np.nanmin(all_vals)), float(np.nanmax(all_vals))
         margin = (hi - lo) * 0.05
         ref_x = np.array([lo - margin, hi + margin])
@@ -232,15 +376,17 @@ class RatioGraphWidget(QWidget):
 
     def add_slope_band(self, pct: float) -> None:
         """Add ±pct% corridor lines around the 1:1 reference."""
-        if not self._sensors:
+        if not self._sensors or not self._scatter_items:
             return
-        # Compute data range from current scatter
-        if self._scatter is None:
+        all_x, all_y = [], []
+        for scatter in self._scatter_items:
+            pts = scatter.getData()
+            if pts[0] is not None and len(pts[0]) > 0:
+                all_x.append(pts[0])
+                all_y.append(pts[1])
+        if not all_x:
             return
-        pts = self._scatter.getData()
-        if pts[0] is None or len(pts[0]) == 0:
-            return
-        all_vals = np.concatenate([pts[0], pts[1]])
+        all_vals = np.concatenate(all_x + all_y)
         lo, hi = float(np.nanmin(all_vals)), float(np.nanmax(all_vals))
         margin = (hi - lo) * 0.05
         ref_x = np.array([lo - margin, hi + margin])
@@ -302,14 +448,13 @@ class RatioGraphWidget(QWidget):
     def _on_select_mode_toggled(self, checked: bool) -> None:
         vb = self._plot.getPlotItem().getViewBox()
         if checked:
-            # Disable pyqtgraph pan/zoom so our rubber band can use left-drag
             vb.setMouseEnabled(x=False, y=False)
             self._select_btn.setText("✓ Box Select (ON)")
             self._select_btn.setStyleSheet("background-color: #1565C0; color: white;")
         else:
             vb.setMouseEnabled(x=True, y=True)
             self._selected_indices.clear()
-            if self._scatter:
+            if self._scatter_items:
                 self._update_scatter_colors()
             self._select_btn.setText("☐ Box Select")
             self._select_btn.setStyleSheet("")
@@ -320,7 +465,7 @@ class RatioGraphWidget(QWidget):
 
     def _on_mouse_moved(self, event) -> None:
         pos = event[0]
-        if self._scatter is None or not self._plot.sceneBoundingRect().contains(pos):
+        if not self._scatter_items or not self._plot.sceneBoundingRect().contains(pos):
             self._hover_label.setVisible(False)
             return
 
@@ -328,41 +473,38 @@ class RatioGraphWidget(QWidget):
         mp = vb.mapSceneToView(pos)
         mx, my = mp.x(), mp.y()
 
-        # Find nearest point
-        pts = self._scatter.getData()
-        if pts[0] is None or len(pts[0]) == 0:
-            self._hover_label.setVisible(False)
-            return
-
-        xs, ys = pts[0], pts[1]
-        # Normalize by view range for better distance calc
         vr = vb.viewRange()
         x_range = vr[0][1] - vr[0][0] or 1.0
         y_range = vr[1][1] - vr[1][0] or 1.0
-        dists = ((xs - mx) / x_range) ** 2 + ((ys - my) / y_range) ** 2
-        nearest = int(np.argmin(dists))
 
-        # Only show tooltip if close enough (within 2% of view range)
-        if np.sqrt(dists[nearest]) > 0.05:
+        best_dist = float("inf")
+        best_d: Optional[dict] = None
+
+        for scatter in self._scatter_items:
+            pts = scatter.getData()
+            if pts[0] is None or len(pts[0]) == 0:
+                continue
+            xs, ys = pts[0], pts[1]
+            dists = ((xs - mx) / x_range) ** 2 + ((ys - my) / y_range) ** 2
+            nearest_idx = int(np.argmin(dists))
+            dist = float(np.sqrt(dists[nearest_idx]))
+            if dist < best_dist:
+                spots = scatter.points()
+                if nearest_idx < len(spots):
+                    d = spots[nearest_idx].data()
+                    if isinstance(d, dict):
+                        best_dist = dist
+                        best_d = d
+
+        if best_dist > 0.05 or best_d is None:
             self._hover_label.setVisible(False)
             return
 
-        # Get spot data — scatter stores per-point data in the spots list
-        spots = self._scatter.points()
-        if nearest >= len(spots):
-            self._hover_label.setVisible(False)
-            return
-
-        d = spots[nearest].data()
-        if not isinstance(d, dict):
-            self._hover_label.setVisible(False)
-            return
-
-        ratio_str = f"{d['ratio']:.4f}" if not np.isnan(float(d['ratio'])) else "N/A"
+        ratio_str = f"{best_d['ratio']:.4f}" if not np.isnan(float(best_d['ratio'])) else "N/A"
         html = (
-            f"<b>{d['sensor']}</b><br>"
-            f"Strain A: {d['strain_a']:.6g}<br>"
-            f"Strain B: {d['strain_b']:.6g}<br>"
+            f"<b>{best_d['sensor']}</b><br>"
+            f"Strain A: {best_d['strain_a']:.6g}<br>"
+            f"Strain B: {best_d['strain_b']:.6g}<br>"
             f"Ratio (A/B): {ratio_str}"
         )
         self._hover_label.setHtml(html)
@@ -432,14 +574,14 @@ class RatioGraphWidget(QWidget):
     # ------------------------------------------------------------------ #
 
     def _select_points_in_rect(self, rect: QRect) -> None:
-        if self._scatter is None or not self._sensors:
+        if not self._scatter_items or not self._sensors:
             return
 
         vb = self._plot.getPlotItem().getViewBox()
         tl_scene = self._plot.mapToScene(rect.topLeft())
         br_scene = self._plot.mapToScene(rect.bottomRight())
-        tl_plot = vb.mapSceneToView(tl_scene)
-        br_plot = vb.mapSceneToView(br_scene)
+        tl_plot  = vb.mapSceneToView(tl_scene)
+        br_plot  = vb.mapSceneToView(br_scene)
 
         x_min = min(tl_plot.x(), br_plot.x())
         x_max = max(tl_plot.x(), br_plot.x())
@@ -460,27 +602,24 @@ class RatioGraphWidget(QWidget):
         self._update_scatter_colors()
 
     def _update_scatter_colors(self) -> None:
-        if self._scatter is None:
-            return
-        brushes = []
-        for i, (va, vb_val) in enumerate(zip(self._values_a, self._values_b)):
-            try:
-                fa, fb = float(va), float(vb_val)
-                if np.isnan(fa) or np.isnan(fb):
-                    continue
-            except (TypeError, ValueError):
-                continue
-            brushes.append(
-                pg.mkBrush("#F44336") if i in self._selected_indices
-                else pg.mkBrush("#1565C0")
-            )
-        if brushes:
-            self._scatter.setBrush(brushes)
+        """Repaint all scatter items: selected points red, others their group colour."""
+        for scatter, group_color in zip(self._scatter_items, self._scatter_group_colors):
+            spots = scatter.points()
+            brushes = []
+            for spot in spots:
+                d = spot.data()
+                orig_idx = d.get("orig_idx", -1) if isinstance(d, dict) else -1
+                brushes.append(
+                    pg.mkBrush("#F44336") if orig_idx in self._selected_indices
+                    else pg.mkBrush(group_color)
+                )
+            if brushes:
+                scatter.setBrush(brushes)
 
     def _show_selection_menu(self, global_pos: QPoint) -> None:
         menu = QMenu(self)
         count = len(self._selected_indices)
-        plot_act = menu.addAction(f"Plot {count} Selected Sensor(s) to LoadStep Graph…")
+        plot_act   = menu.addAction(f"Plot {count} Selected Sensor(s) to LoadStep Graph…")
         delete_act = menu.addAction(f"Remove {count} Selected Point(s)")
         menu.addSeparator()
         cancel = menu.addAction("Cancel Selection")
@@ -502,13 +641,13 @@ class RatioGraphWidget(QWidget):
         if not self._sensors:
             return None
         return {
-            "title": self._title,
-            "sensors": list(self._sensors),
+            "title":    self._title,
+            "sensors":  list(self._sensors),
             "values_a": list(self._values_a),
             "values_b": list(self._values_b),
-            "ratios": list(self._ratios),
-            "label_a": self._label_a,
-            "label_b": self._label_b,
+            "ratios":   list(self._ratios),
+            "label_a":  self._label_a,
+            "label_b":  self._label_b,
             "load_step": self._load_step,
         }
 
@@ -517,20 +656,20 @@ class RatioGraphWidget(QWidget):
         if not self._sensors:
             return None
         return {
-            "sensors": list(self._sensors),
+            "sensors":  list(self._sensors),
             "values_a": list(self._values_a),
             "values_b": list(self._values_b),
-            "ratios": list(self._ratios),
-            "label_a": getattr(self, "_label_a", "Source A"),
-            "label_b": getattr(self, "_label_b", "Source B"),
+            "ratios":   list(self._ratios),
+            "label_a":  getattr(self, "_label_a", "Source A"),
+            "label_b":  getattr(self, "_label_b", "Source B"),
         }
 
     def _remove_selected_points(self) -> None:
-        keep = [i for i in range(len(self._sensors)) if i not in self._selected_indices]
-        sensors = [self._sensors[i] for i in keep]
+        keep     = [i for i in range(len(self._sensors)) if i not in self._selected_indices]
+        sensors  = [self._sensors[i]  for i in keep]
         values_a = [self._values_a[i] for i in keep]
         values_b = [self._values_b[i] for i in keep]
-        ratios = [self._ratios[i] for i in keep]
+        ratios   = [self._ratios[i]   for i in keep]
         self._selected_indices.clear()
         if sensors:
             self.plot_ratio(sensors, values_a, values_b, ratios)

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -36,7 +37,7 @@ class AnalysisView(QWidget):
     row_delete_requested = Signal(str, list)
     column_delete_requested = Signal(str, list)
     sensor_dropped_to_graph = Signal(dict, object)       # payload, graph widget
-    filter_changed = Signal(str)                         # filter text
+    filter_changed = Signal(str, bool)                   # filter text, is_regex
     buckling_requested = Signal()                        # open buckling analysis dialog
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -64,8 +65,16 @@ class AnalysisView(QWidget):
         self._filter_edit.setPlaceholderText("Filter sensors…")
         self._filter_edit.setClearButtonEnabled(True)
         self._filter_edit.setMaximumWidth(200)
-        self._filter_edit.textChanged.connect(self.filter_changed)
+        self._filter_edit.textChanged.connect(self._emit_filter)
         left_header.addWidget(self._filter_edit)
+
+        self._regex_btn = QPushButton(".*")
+        self._regex_btn.setCheckable(True)
+        self._regex_btn.setChecked(False)
+        self._regex_btn.setFixedWidth(32)
+        self._regex_btn.setToolTip("Toggle regex filter")
+        self._regex_btn.toggled.connect(self._emit_filter)
+        left_header.addWidget(self._regex_btn)
 
         left_layout.addLayout(left_header)
 
@@ -140,10 +149,13 @@ class AnalysisView(QWidget):
         if w:
             w.update_dataframe(df)
 
-    def set_table_filter(self, text: str) -> None:
+    def _emit_filter(self, _=None) -> None:
+        self.filter_changed.emit(self._filter_edit.text(), self._regex_btn.isChecked())
+
+    def set_table_filter(self, text: str, regex: bool = False) -> None:
         """Apply filter text to all table widgets."""
         for w in self._table_widgets.values():
-            w.set_sensor_filter(text)
+            w.set_sensor_filter(text, regex)
 
     def set_table_mapped_names(self, source_id: str, mapped: dict) -> None:
         """Set mapped-names dict on a table widget to show the extra column."""

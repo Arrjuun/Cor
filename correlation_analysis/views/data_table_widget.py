@@ -3,6 +3,7 @@ text-based filtering, and drag-and-drop."""
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional
 
 import numpy as np
@@ -167,6 +168,7 @@ class SensorTableModel(QAbstractTableModel):
         self._show_formula = show_formula
         self._mapped_names: dict[str, str] = {}   # sensor_name → "canonical | alias | ..."
         self._filter_text: str = ""
+        self._filter_regex: bool = False
         self._row_indices: list[int] = list(range(len(self._df)))
 
     # ------------------------------------------------------------------ #
@@ -190,10 +192,11 @@ class SensorTableModel(QAbstractTableModel):
     # Filtering                                                           #
     # ------------------------------------------------------------------ #
 
-    def set_filter(self, text: str) -> None:
+    def set_filter(self, text: str, regex: bool = False) -> None:
         """Filter rows by text (checks sensor name and mapped names)."""
         self.beginResetModel()
-        self._filter_text = text.strip().lower()
+        self._filter_text = text.strip() if regex else text.strip().lower()
+        self._filter_regex = regex
         self._rebuild_row_indices()
         self.endResetModel()
 
@@ -208,15 +211,31 @@ class SensorTableModel(QAbstractTableModel):
             self._row_indices = list(range(len(self._df)))
             return
         t = self._filter_text
-        indices = []
-        for i, name in enumerate(self._df.index):
-            sname = str(name).lower()
-            if t in sname:
-                indices.append(i)
-                continue
-            mapped = self._mapped_names.get(str(name), "").lower()
-            if t in mapped:
-                indices.append(i)
+        if self._filter_regex:
+            try:
+                pattern = re.compile(t, re.IGNORECASE)
+            except re.error:
+                # Invalid regex – show all rows rather than crash
+                self._row_indices = list(range(len(self._df)))
+                return
+            indices = []
+            for i, name in enumerate(self._df.index):
+                if pattern.search(str(name)):
+                    indices.append(i)
+                    continue
+                mapped = self._mapped_names.get(str(name), "")
+                if pattern.search(mapped):
+                    indices.append(i)
+        else:
+            indices = []
+            for i, name in enumerate(self._df.index):
+                sname = str(name).lower()
+                if t in sname:
+                    indices.append(i)
+                    continue
+                mapped = self._mapped_names.get(str(name), "").lower()
+                if t in mapped:
+                    indices.append(i)
         self._row_indices = indices
 
     # ------------------------------------------------------------------ #
@@ -555,9 +574,13 @@ class DataTableWidget(QWidget):
         """Set per-sensor mapped names (canonical / aliases) for the extra column."""
         self._model.set_mapped_names(mapped)
 
-    def set_sensor_filter(self, text: str) -> None:
+    def set_sensor_filter(self, text: str, regex: bool = False) -> None:
         """Filter rows by text across sensor name and mapped-names column."""
-        self._model.set_filter(text)
+        self._model.set_filter(text, regex)
+
+    def get_visible_sensor_names(self) -> list[str]:
+        """Return sensor names currently visible (after text filter)."""
+        return [self._model.sensor_name(r) for r in range(self._model.rowCount())]
 
     def get_model(self) -> SensorTableModel:
         return self._model

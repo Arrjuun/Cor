@@ -14,6 +14,9 @@ from ..views.loadstep_graph import LoadStepGraphWidget
 from ..views.ratio_graph import RatioGraphWidget
 
 
+_SOURCE_LINE_STYLES = ["Solid", "Dotted", "Dashed", "DashDot"]
+
+
 class GraphPresenter:
     """Handles dropping sensors onto graphs and updating graph data."""
 
@@ -66,6 +69,19 @@ class GraphPresenter:
         )
 
     # ------------------------------------------------------------------ #
+    # Helpers                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _source_line_style(self, source_id: str) -> str:
+        """Return the line style for a source based on its insertion order."""
+        source_ids = self._data.source_ids()
+        try:
+            idx = source_ids.index(source_id)
+        except ValueError:
+            idx = 0
+        return _SOURCE_LINE_STYLES[idx % len(_SOURCE_LINE_STYLES)]
+
+    # ------------------------------------------------------------------ #
     # Handlers                                                             #
     # ------------------------------------------------------------------ #
 
@@ -82,7 +98,13 @@ class GraphPresenter:
         except ValueError:
             return
 
-        graph.add_series(sensor_name, source_id, x, y)
+        color = graph.consume_next_color()
+        style = SeriesStyle(
+            color=color,
+            line_style=self._source_line_style(source_id),
+            label=sensor_name,
+        )
+        graph.add_series(sensor_name, source_id, x, y, style)
 
         # Also ask about mapped sensors
         if not self._mapping.is_empty():
@@ -91,13 +113,16 @@ class GraphPresenter:
                 or self._mapping.resolve_by_name(sensor_name)
             )
             if canonical:
-                self._offer_mapped_sensors(canonical, graph, exclude_source=source_id)
+                self._offer_mapped_sensors(
+                    canonical, graph, exclude_source=source_id, color=color
+                )
 
     def _offer_mapped_sensors(
         self,
         canonical: str,
         graph: LoadStepGraphWidget,
         exclude_source: str = "",
+        color: Optional[str] = None,
     ) -> None:
         from PySide6.QtWidgets import QMessageBox
         # Collect all alias names for this canonical sensor
@@ -138,7 +163,11 @@ class GraphPresenter:
                     x, y = self._graph_data.get_loadstep_series(sid, sname)
                     src_obj = self._data.get_source(sid)
                     label = f"{sname} ({src_obj.display_name if src_obj else sid})"
-                    style = SeriesStyle(label=label)
+                    style = SeriesStyle(
+                        color=color or "#1565C0",
+                        line_style=self._source_line_style(sid),
+                        label=label,
+                    )
                     graph.add_series(sname, sid, x, y, style)
                 except ValueError:
                     pass
@@ -303,6 +332,31 @@ class GraphPresenter:
                                     "No common sensors found between selected sources.")
             return
 
+        # Filter to only sensors visible in the data tables (respects text filter)
+        table_a = self._view.get_table_widget(sid_a)
+        table_b = self._view.get_table_widget(sid_b)
+        if table_a is not None and table_b is not None:
+            visible_a = set(table_a.get_visible_sensor_names())
+            visible_b = set(table_b.get_visible_sensor_names())
+            use_mapping = not self._mapping.is_empty()
+            if use_mapping:
+                visible_canonicals = set()
+                for canonical in self._mapping.canonical_names():
+                    aliases = self._mapping.get_aliases(canonical)
+                    alias_a = next((n for n in aliases.values() if n in visible_a), None)
+                    alias_b = next((n for n in aliases.values() if n in visible_b), None)
+                    if alias_a and alias_b:
+                        visible_canonicals.add(canonical)
+                ratio_df = ratio_df[ratio_df["sensor"].isin(visible_canonicals)]
+            else:
+                visible_common = visible_a & visible_b
+                ratio_df = ratio_df[ratio_df["sensor"].isin(visible_common)]
+
+        if ratio_df.empty:
+            QMessageBox.information(self._view, "Ratio Graph",
+                                    "No visible sensors to plot (all sensors are filtered out).")
+            return
+
         sensors = ratio_df["sensor"].tolist()
         values_a = ratio_df["value_a"].tolist()
         values_b = ratio_df["value_b"].tolist()
@@ -377,7 +431,13 @@ class GraphPresenter:
                             x, y = self._graph_data.get_loadstep_series(
                                 source_id, candidate
                             )
-                            graph.add_series(candidate, source_id, x, y)
+                            color = graph.consume_next_color()
+                            style = SeriesStyle(
+                                color=color,
+                                line_style=self._source_line_style(source_id),
+                                label=candidate,
+                            )
+                            graph.add_series(candidate, source_id, x, y, style)
                         except ValueError:
                             pass
                         break
