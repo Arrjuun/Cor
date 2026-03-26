@@ -9,19 +9,22 @@ import pyqtgraph as pg
 from PySide6.QtCore import QByteArray, QMimeData, QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QMenu,
     QPushButton,
     QRubberBand,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from .customization_dialog import CustomizationDialog, SeriesStyle, LINE_STYLE_MAP
+from .customization_dialog import ColorButton, CustomizationDialog, SeriesStyle, LINE_STYLE_MAP
 
 _MIME_COL = "application/x-loadstep-column"
 
@@ -59,6 +62,17 @@ _LOC_NAMES = {"I": "Inner", "O": "Outer", "W": "Web", "F": "Foot", "H": "Head"}
 _DIR_NAMES = {"L": "Long",  "T": "Trans", "A": "0°", "B": "45°",  "C": "90°"}
 
 # Distinct colour palette for groups
+# Scatter symbol map (display name → pyqtgraph symbol code)
+_SYMBOL_MAP: dict[str, str] = {
+    "Circle":   "o",
+    "Square":   "s",
+    "Triangle": "t",
+    "Diamond":  "d",
+    "Cross":    "+",
+    "Star":     "star",
+}
+_SYMBOL_NAMES = list(_SYMBOL_MAP.keys())
+
 _GROUP_PALETTE = [
     "#1565C0",  # blue
     "#C62828",  # red
@@ -119,6 +133,81 @@ def _group_label(key: str) -> str:
     )
 
 
+class _GroupStyleDialog(QDialog):
+    """Dialog to customise color and marker shape for each sensor group."""
+
+    def __init__(
+        self,
+        groups: list[tuple[str, str]],   # [(group_key, human_label), …]
+        styles: dict[str, dict],          # group_key → {color, symbol}
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Customize Group Styles")
+        self.setMinimumWidth(440)
+        self._groups = groups
+        # deep-copy so edits don't affect caller until accepted
+        self._styles = {k: dict(v) for k, v in styles.items()}
+        self._color_btns: dict[str, ColorButton] = {}
+        self._symbol_combos: dict[str, QComboBox] = {}
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        form = QFormLayout(inner)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setHorizontalSpacing(12)
+
+        for key, label in self._groups:
+            style = self._styles.get(key, {"color": "#1565C0", "symbol": "o"})
+
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(8)
+
+            color_btn = ColorButton(style.get("color", "#1565C0"))
+            self._color_btns[key] = color_btn
+            row_l.addWidget(color_btn)
+
+            sym_combo = QComboBox()
+            sym_combo.addItems(_SYMBOL_NAMES)
+            cur_sym = style.get("symbol", "o")
+            cur_name = next(
+                (n for n, s in _SYMBOL_MAP.items() if s == cur_sym), "Circle"
+            )
+            sym_combo.setCurrentText(cur_name)
+            self._symbol_combos[key] = sym_combo
+            row_l.addWidget(sym_combo)
+            row_l.addStretch()
+
+            form.addRow(QLabel(label), row_w)
+
+        scroll.setWidget(inner)
+        layout.addWidget(scroll)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_styles(self) -> dict[str, dict]:
+        """Return the updated styles dict."""
+        return {
+            key: {
+                "color":  self._color_btns[key].get_color(),
+                "symbol": _SYMBOL_MAP[self._symbol_combos[key].currentText()],
+            }
+            for key, _ in self._groups
+        }
+
+
 class RatioGraphWidget(QWidget):
     """
     Ratio graph: X=Strain A, Y=Strain B, one point per sensor.
@@ -153,6 +242,8 @@ class RatioGraphWidget(QWidget):
         self._load_step: float = 0.0
         self._selected_indices: set[int] = set()
         self._ref_lines: list = []
+        self._group_keys: list[str] = []          # parallel to _scatter_items
+        self._group_styles: dict[str, dict] = {}  # group_key → {color, symbol}
         self._box_selecting = False
         self._rb_origin: Optional[QPoint] = None
         self._build_ui(title)
@@ -278,6 +369,7 @@ class RatioGraphWidget(QWidget):
             self._plot.removeItem(item)
         self._scatter_items.clear()
         self._scatter_group_colors.clear()
+        self._group_keys.clear()
 
         # ---- Clear legend ----
         if self._legend is not None:
@@ -330,8 +422,19 @@ class RatioGraphWidget(QWidget):
                 for i in indices
             ]
 
-            color = _GROUP_PALETTE[gi % len(_GROUP_PALETTE)]
+            # Use stored style if available, else assign palette default
+            default_color = _GROUP_PALETTE[gi % len(_GROUP_PALETTE)]
+            if group_key not in self._group_styles:
+                self._group_styles[group_key] = {
+                    "color":  default_color,
+                    "symbol": "o",
+                }
+            style   = self._group_styles[group_key]
+            color   = style["color"]
+            symbol  = style["symbol"]
+
             self._scatter_group_colors.append(color)
+            self._group_keys.append(group_key)
 
             brushes = [pg.mkBrush(color)] * len(indices)
             pens    = [pg.mkPen(color=color, width=1, cosmetic=True)] * len(indices)
@@ -339,6 +442,7 @@ class RatioGraphWidget(QWidget):
             scatter = pg.ScatterPlotItem(
                 x=x_vals, y=y_vals,
                 size=10,
+                symbol=symbol,
                 pen=pens,
                 brush=brushes,
                 data=spot_data,
@@ -540,6 +644,12 @@ class RatioGraphWidget(QWidget):
                 event.acceptProposedAction()
                 return True
 
+        # --- Right-click context menu for group style customisation ---
+        if et == QEvent.Type.ContextMenu and obj is self._plot.viewport():
+            if not self._select_btn.isChecked() and self._scatter_items:
+                self._show_group_context_menu(event.globalPos())
+                return True
+
         # --- Box selection (only on viewport, only when select mode active) ---
         if obj is self._plot.viewport() and self._select_btn.isChecked():
             if et == QEvent.Type.MouseButtonPress:
@@ -673,6 +783,71 @@ class RatioGraphWidget(QWidget):
         self._selected_indices.clear()
         if sensors:
             self.plot_ratio(sensors, values_a, values_b, ratios)
+
+    # ------------------------------------------------------------------ #
+    # Group style context menu                                            #
+    # ------------------------------------------------------------------ #
+
+    def _show_group_context_menu(self, global_pos: QPoint) -> None:
+        """Right-click context menu: let user customise per-group color/marker."""
+        menu = QMenu(self)
+        act = menu.addAction("Customize Group Styles…")
+        act.setEnabled(bool(self._group_keys))
+        chosen = menu.exec(global_pos)
+        if chosen is act:
+            self._open_group_style_dialog()
+
+    def _open_group_style_dialog(self) -> None:
+        # Build ordered unique group list
+        seen: set[str] = set()
+        groups: list[tuple[str, str]] = []
+        for key in self._group_keys:
+            if key not in seen:
+                seen.add(key)
+                if key and key != "Other" and key != "":
+                    label = _group_label(key)
+                elif key == "Other":
+                    label = "Other"
+                else:
+                    label = "All Sensors"
+                groups.append((key, label))
+        if not groups:
+            return
+
+        dlg = _GroupStyleDialog(groups, self._group_styles, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._group_styles.update(dlg.get_styles())
+            self._apply_group_styles()
+
+    def _apply_group_styles(self) -> None:
+        """Reapply stored group styles (color + symbol) to all scatter items."""
+        for scatter, key in zip(self._scatter_items, self._group_keys):
+            style  = self._group_styles.get(key, {"color": "#1565C0", "symbol": "o"})
+            color  = style["color"]
+            symbol = style["symbol"]
+
+            # Update parallel color list so _update_scatter_colors stays consistent
+            idx = self._scatter_items.index(scatter)
+            if idx < len(self._scatter_group_colors):
+                self._scatter_group_colors[idx] = color
+
+            spots = scatter.points()
+            brushes = []
+            pens    = []
+            for spot in spots:
+                d = spot.data()
+                orig_idx = d.get("orig_idx", -1) if isinstance(d, dict) else -1
+                if orig_idx in self._selected_indices:
+                    brushes.append(pg.mkBrush("#F44336"))
+                    pens.append(pg.mkPen(color="#F44336", width=1, cosmetic=True))
+                else:
+                    brushes.append(pg.mkBrush(color))
+                    pens.append(pg.mkPen(color=color, width=1, cosmetic=True))
+
+            if brushes:
+                scatter.setBrush(brushes)
+                scatter.setPen(pens)
+            scatter.setSymbol(symbol)
 
     # ------------------------------------------------------------------ #
     # Outer widget drop fallback                                           #

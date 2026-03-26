@@ -204,6 +204,7 @@ class SensorTableModel(QAbstractTableModel):
         """Set mapped-names dict and refresh the extra column."""
         self.beginResetModel()
         self._mapped_names = dict(mapped)
+        self._rebuild_row_indices()
         self.endResetModel()
 
     def _rebuild_row_indices(self) -> None:

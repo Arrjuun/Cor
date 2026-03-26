@@ -72,7 +72,11 @@ class AnalysisView(QWidget):
         self._regex_btn.setCheckable(True)
         self._regex_btn.setChecked(False)
         self._regex_btn.setFixedWidth(32)
-        self._regex_btn.setToolTip("Toggle regex filter")
+        self._regex_btn.setToolTip(
+            "Toggle regex filter (searches sensor name and mapped name)\n"
+            "Note: [60-70] is a character class [0-7], not a number range.\n"
+            "Use F(6[0-9]|70) to match F60–F70."
+        )
         self._regex_btn.toggled.connect(self._emit_filter)
         left_header.addWidget(self._regex_btn)
 
