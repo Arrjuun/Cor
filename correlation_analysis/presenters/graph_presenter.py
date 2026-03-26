@@ -413,18 +413,32 @@ class GraphPresenter:
     def _populate_graph_from_sensors(
         self, graph: LoadStepGraphWidget, sensors: list[str]
     ) -> None:
-        """Add series for each sensor (canonical name or direct name) to *graph*."""
+        """Add series for each sensor (alias name or canonical) to *graph*.
+
+        Sensors from the ratio graph are now alias names.  We resolve each name
+        to its canonical (via resolve_by_name if needed) so that aliases in all
+        sources are found and plotted.
+        """
         for source_id in self._data.source_ids():
             source = self._data.get_source(source_id)
             if source is None:
                 continue
             df_index = set(source.df.index.astype(str))
 
-            for canonical in sensors:
-                candidates = [canonical]
+            for sensor_name in sensors:
+                candidates = [sensor_name]
                 if not self._mapping.is_empty():
-                    aliases = self._mapping.get_aliases(canonical)
-                    candidates.extend(aliases.values())
+                    aliases = self._mapping.get_aliases(sensor_name)
+                    if aliases:
+                        # sensor_name is already a canonical key
+                        candidates.extend(aliases.values())
+                    else:
+                        # sensor_name is an alias — resolve to canonical first
+                        canonical = self._mapping.resolve_by_name(sensor_name)
+                        if canonical:
+                            candidates.extend(
+                                self._mapping.get_aliases(canonical).values()
+                            )
 
                 for candidate in candidates:
                     if candidate in df_index:
