@@ -785,14 +785,15 @@ class RatioGraphWidget(QWidget):
         if not self._sensors:
             return None
         return {
-            "title":    self._title,
-            "sensors":  list(self._sensors),
-            "values_a": list(self._values_a),
-            "values_b": list(self._values_b),
-            "ratios":   list(self._ratios),
-            "label_a":  self._label_a,
-            "label_b":  self._label_b,
+            "title":     self._title,
+            "sensors":   list(self._sensors),
+            "values_a":  list(self._values_a),
+            "values_b":  list(self._values_b),
+            "ratios":    list(self._ratios),
+            "label_a":   self._label_a,
+            "label_b":   self._label_b,
             "load_step": self._load_step,
+            "ref_bands": [b["pct"] for b in self._ref_bands],
         }
 
     def get_export_data(self) -> Optional[dict]:
@@ -800,12 +801,13 @@ class RatioGraphWidget(QWidget):
         if not self._sensors:
             return None
         return {
-            "sensors":  list(self._sensors),
-            "values_a": list(self._values_a),
-            "values_b": list(self._values_b),
-            "ratios":   list(self._ratios),
-            "label_a":  getattr(self, "_label_a", "Source A"),
-            "label_b":  getattr(self, "_label_b", "Source B"),
+            "sensors":   list(self._sensors),
+            "values_a":  list(self._values_a),
+            "values_b":  list(self._values_b),
+            "ratios":    list(self._ratios),
+            "label_a":   getattr(self, "_label_a", "Source A"),
+            "label_b":   getattr(self, "_label_b", "Source B"),
+            "ref_bands": [b["pct"] for b in self._ref_bands],
         }
 
     def _remove_selected_points(self) -> None:

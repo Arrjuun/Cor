@@ -294,6 +294,19 @@ class BokehExporter:
                line_color="#9E9E9E", line_dash="dashed", line_width=1,
                legend_label="1:1 line")
 
+        # Reference bands
+        for pct in ratio_data.get("ref_bands", []):
+            factor_pos = 1.0 + pct / 100.0
+            factor_neg = 1.0 - pct / 100.0
+            ref_y_pos = [v * factor_pos for v in ref_x]
+            ref_y_neg = [v * factor_neg for v in ref_x]
+            label = f"±{pct:.0f}%"
+            p.line(ref_x, ref_y_pos,
+                   line_color="#F57F17", line_dash="dashed", line_width=1,
+                   legend_label=label)
+            p.line(ref_x, ref_y_neg,
+                   line_color="#F57F17", line_dash="dashed", line_width=1)
+
         return p
 
     # ------------------------------------------------------------------ #
