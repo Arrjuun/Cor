@@ -29,7 +29,8 @@ class BucklingExportSettings:
     polyorder: int = 2
     acceleration_jerk_threshold: float = 1.0e-5
     min_principal_magnitude_threshold: float = 1.0e-6
-    python_exe_path: str = ""
+    python_env_dir: str = ""
+    fembuckling_dir: str = ""
 
 
 # Column order expected by the FEM buckling tool

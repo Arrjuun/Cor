@@ -128,23 +128,34 @@ class BucklingExportDialog(QDialog):
 
         layout.addWidget(params_box)
 
-        # ---- Python executable ----
+        # ---- Run Analysis ----
         script_box = QGroupBox("Run Analysis (optional)")
         script_form = QFormLayout(script_box)
         script_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        script_row = QHBoxLayout()
-        self._script_edit = QLineEdit()
-        self._script_edit.setPlaceholderText(
-            "Full path to python.exe with fembuckling installed — leave blank to export only"
-        )
-        script_browse = QPushButton("Browse…")
-        script_browse.setCheckable(False)
-        script_browse.setFixedWidth(80)
-        script_browse.clicked.connect(self._browse_script)
-        script_row.addWidget(self._script_edit)
-        script_row.addWidget(script_browse)
-        script_form.addRow("Python executable:", script_row)
+        # Python environment directory
+        env_row = QHBoxLayout()
+        self._env_edit = QLineEdit()
+        self._env_edit.setPlaceholderText("Select Python environment directory (Envs/myenv)…")
+        env_browse = QPushButton("Browse…")
+        env_browse.setCheckable(False)
+        env_browse.setFixedWidth(80)
+        env_browse.clicked.connect(self._browse_env_dir)
+        env_row.addWidget(self._env_edit)
+        env_row.addWidget(env_browse)
+        script_form.addRow("Python environment:", env_row)
+
+        # fembuckling package directory
+        fb_row = QHBoxLayout()
+        self._fb_edit = QLineEdit()
+        self._fb_edit.setPlaceholderText("Select fembuckling package directory…")
+        fb_browse = QPushButton("Browse…")
+        fb_browse.setCheckable(False)
+        fb_browse.setFixedWidth(80)
+        fb_browse.clicked.connect(self._browse_fembuckling_dir)
+        fb_row.addWidget(self._fb_edit)
+        fb_row.addWidget(fb_browse)
+        script_form.addRow("fembuckling dir:", fb_row)
 
         layout.addWidget(script_box)
 
@@ -176,14 +187,15 @@ class BucklingExportDialog(QDialog):
         if path:
             self._dir_edit.setText(path)
 
-    def _browse_script(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Python Executable",
-            filter="Executables (*.exe);;All Files (*)",
-        )
+    def _browse_env_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Python Environment Directory")
         if path:
-            self._script_edit.setText(path)
+            self._env_edit.setText(path)
+
+    def _browse_fembuckling_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select fembuckling Package Directory")
+        if path:
+            self._fb_edit.setText(path)
 
     def _on_accept(self) -> None:
         csv_path = self._csv_edit.text().strip()
@@ -213,7 +225,8 @@ class BucklingExportDialog(QDialog):
             polyorder=self._polyorder.value(),
             acceleration_jerk_threshold=self._jerk_threshold.value(),
             min_principal_magnitude_threshold=self._magnitude_threshold.value(),
-            python_exe_path=self._script_edit.text().strip(),
+            python_env_dir=self._env_edit.text().strip(),
+            fembuckling_dir=self._fb_edit.text().strip(),
         )
 
 

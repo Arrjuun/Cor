@@ -240,7 +240,7 @@ class AnalysisPresenter:
         log.info("Buckling CSV written to '%s'.", csv_path)
         log.info("Buckling YAML written to '%s'.", yaml_path)
 
-        if not settings.python_exe_path:
+        if not settings.python_env_dir:
             QMessageBox.information(
                 self._view,
                 "Export Complete",
@@ -248,7 +248,28 @@ class AnalysisPresenter:
             )
             return
 
-        self._run_buckling_script(settings.python_exe_path, yaml_path, csv_path, settings.output_dir)
+        # Resolve python executable from the environment directory
+        env_path = Path(settings.python_env_dir)
+        python_exe = env_path / "python.exe"
+        if not python_exe.exists():
+            python_exe = env_path / "Scripts" / "python.exe"
+        if not python_exe.exists():
+            python_exe = env_path / "bin" / "python"
+        if not python_exe.exists():
+            QMessageBox.critical(
+                self._view,
+                "Python Not Found",
+                f"Could not locate a Python executable in:\n{settings.python_env_dir}",
+            )
+            return
+
+        self._run_buckling_script(
+            str(python_exe),
+            yaml_path,
+            csv_path,
+            settings.output_dir,
+            settings.fembuckling_dir,
+        )
 
     def _run_buckling_script(
         self,
@@ -256,10 +277,32 @@ class AnalysisPresenter:
         yaml_path: str,
         input_csv_path: str,
         output_dir: str,
+        fembuckling_dir: str = "",
     ) -> None:
-        """Launch fembuckling.onset via the specified Python executable and process its output."""
+        """Launch fembuckling.onset via the specified Python executable and process its output.
+
+        Sets PYTHONPATH to the parent of *fembuckling_dir* so the module can be
+        found even when it is not installed in the environment.
+        """
+        from PySide6.QtCore import QProcessEnvironment
+
         program = python_exe_path
         args = ["-m", "fembuckling.onset", yaml_path]
+
+        process = QProcess(self._view)
+
+        if fembuckling_dir:
+            package_parent = str(Path(fembuckling_dir).parent)
+            env = QProcessEnvironment.systemEnvironment()
+            existing_pythonpath = env.value("PYTHONPATH", "")
+            sep = ";" if Path(python_exe_path).suffix.lower() == ".exe" else ":"
+            new_pythonpath = (
+                package_parent + sep + existing_pythonpath
+                if existing_pythonpath
+                else package_parent
+            )
+            env.insert("PYTHONPATH", new_pythonpath)
+            process.setProcessEnvironment(env)
 
         progress = QProgressDialog(
             "Running buckling onset analysis…",
@@ -273,7 +316,6 @@ class AnalysisPresenter:
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
-        process = QProcess(self._view)
         loop = QEventLoop(self._view)
 
         process.finished.connect(loop.quit)
@@ -287,7 +329,7 @@ class AnalysisPresenter:
                 self._view,
                 "Script Error",
                 f"Could not start the Python executable:\n{python_exe_path}\n\n"
-                "Ensure the path is correct and the fembuckling package is installed.",
+                "Ensure the environment path is correct and the fembuckling directory is set.",
             )
             return
 
