@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .buckling_onset_widget import BucklingOnsetWidget
 from .loadstep_graph import LoadStepGraphWidget
 from .ratio_graph import RatioGraphWidget
 
@@ -86,7 +88,12 @@ class GraphTabContent(QWidget):
         self._inner_layout.addWidget(self._graphs_container)
         self._inner_layout.addStretch()
 
-        # Default graphs
+        # Default graphs (subclasses can override _post_init to skip)
+        self._post_init()
+
+    def _post_init(self) -> None:
+        """Called at the end of _build_ui. Override in subclasses to customise
+        which default graphs are created."""
         self.add_loadstep_graph()
         self.add_ratio_graph()
 
@@ -178,6 +185,42 @@ class GraphTabContent(QWidget):
         }
 
 
+class BucklingTabContent(GraphTabContent):
+    """Tab content that embeds a BucklingOnsetWidget (four fixed plots) and
+    still provides the standard toolbar for adding LoadStep / Ratio graphs
+    and changing the column layout."""
+
+    def __init__(
+        self,
+        tab_id: str,
+        onset_widget: BucklingOnsetWidget,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        # Store the onset widget BEFORE super().__init__ calls _build_ui
+        self._onset_widget = onset_widget
+        super().__init__(tab_id, parent)
+
+    # Override to insert the onset widget at the top of the scroll container
+    def _build_ui(self) -> None:
+        super()._build_ui()
+        # _inner_layout currently has: [0] btn_layout, [1] _graphs_container, [2] stretch
+        # Insert the onset widget at position 0 (above the toolbar)
+        self._inner_layout.insertWidget(0, self._onset_widget)
+
+    def _post_init(self) -> None:
+        """Buckling tabs start with no default graphs."""
+        pass  # do not create default loadstep/ratio graphs
+
+    def get_onset_widget(self) -> BucklingOnsetWidget:
+        return self._onset_widget
+
+    def to_config(self) -> dict:
+        cfg = super().to_config()
+        # Embed the onset data so the tab can be fully restored from session
+        cfg.update(self._onset_widget.to_config())  # adds type, element_id, time, sup, inf, …
+        return cfg
+
+
 class TabGraphView(QWidget):
     """
     QTabWidget-based container for graph tabs.
@@ -191,6 +234,7 @@ class TabGraphView(QWidget):
         super().__init__(parent)
         self._tab_counter = 0
         self._tabs: dict[str, GraphTabContent] = {}
+        self._buckling_tabs: dict[str, BucklingTabContent] = {}
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -216,7 +260,7 @@ class TabGraphView(QWidget):
         self.add_tab("Analysis 1")
 
     def add_raw_tab(self, widget: QWidget, name: str) -> None:
-        """Add an arbitrary widget as a new tab (e.g. buckling onset result tabs)."""
+        """Add an arbitrary widget as a new tab (legacy; prefer add_buckling_tab)."""
         self._tab_counter += 1
         idx = self._tab_widget.addTab(widget, name)
         self._tab_widget.setCurrentIndex(idx)
@@ -235,19 +279,47 @@ class TabGraphView(QWidget):
         self.tab_added.emit(tab_id)
         return content
 
+    def add_buckling_tab(
+        self,
+        onset_widget: BucklingOnsetWidget,
+        name: str = "",
+    ) -> BucklingTabContent:
+        """Add a buckling onset tab backed by *onset_widget*.
+
+        The tab is tracked in *_buckling_tabs* so that it participates in
+        ``to_config()``, ``all_tabs()``, and export/session operations.
+        """
+        self._tab_counter += 1
+        tab_id = f"buckling_tab_{self._tab_counter}"
+        if not name:
+            name = f"Onset: {onset_widget._element_id}"
+
+        content = BucklingTabContent(tab_id, onset_widget)
+        self._buckling_tabs[tab_id] = content
+
+        idx = self._tab_widget.addTab(content, name)
+        self._tab_widget.setCurrentIndex(idx)
+        self.tab_added.emit(tab_id)
+        return content
+
     def _close_tab(self, index: int) -> None:
         if self._tab_widget.count() <= 1:
-            # Don't close the last tab — just clear it or ignore
             return
         widget = self._tab_widget.widget(index)
         tab_id = None
-        for tid, content in self._tabs.items():
+        for tid, content in list(self._tabs.items()):
             if content is widget:
                 tab_id = tid
+                del self._tabs[tid]
                 break
+        if tab_id is None:
+            for tid, content in list(self._buckling_tabs.items()):
+                if content is widget:
+                    tab_id = tid
+                    del self._buckling_tabs[tid]
+                    break
         self._tab_widget.removeTab(index)
         if tab_id:
-            del self._tabs[tab_id]
             self.tab_removed.emit(tab_id)
 
     def _rename_tab(self, index: int) -> None:
@@ -271,9 +343,12 @@ class TabGraphView(QWidget):
     def all_tabs(self) -> list[GraphTabContent]:
         return list(self._tabs.values())
 
+    def all_buckling_tabs(self) -> list[BucklingTabContent]:
+        return list(self._buckling_tabs.values())
+
     def get_tab_name(self, tab_id: str) -> str:
-        """Return the display name of a tab by its ID."""
-        content = self._tabs.get(tab_id)
+        """Return the display name of a tab by its ID (searches both regular and buckling tabs)."""
+        content: QWidget | None = self._tabs.get(tab_id) or self._buckling_tabs.get(tab_id)
         if content is None:
             return tab_id
         for i in range(self._tab_widget.count()):
@@ -285,6 +360,8 @@ class TabGraphView(QWidget):
         graphs = []
         for tab in self._tabs.values():
             graphs.extend(tab.get_loadstep_graphs())
+        for tab in self._buckling_tabs.values():
+            graphs.extend(tab.get_loadstep_graphs())
         return graphs
 
     def clear_all_tabs(self) -> None:
@@ -292,11 +369,22 @@ class TabGraphView(QWidget):
         while self._tab_widget.count():
             self._tab_widget.removeTab(0)
         self._tabs.clear()
+        self._buckling_tabs.clear()
         self._tab_counter = 0
 
     def to_config(self) -> list[dict]:
+        """Return a serialisable list of configs for all tabs (regular and buckling).
+
+        Regular tabs produce dicts without a ``"type"`` key.
+        Buckling tabs include ``"type": "buckling_onset"`` so they can be
+        distinguished on restore.
+        """
         result = []
         for tab_id, tab in self._tabs.items():
+            cfg = tab.to_config()
+            cfg["tab_name"] = self.get_tab_name(tab_id)
+            result.append(cfg)
+        for tab_id, tab in self._buckling_tabs.items():
             cfg = tab.to_config()
             cfg["tab_name"] = self.get_tab_name(tab_id)
             result.append(cfg)

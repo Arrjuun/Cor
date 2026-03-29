@@ -16,6 +16,7 @@ try:
         HoverTool,
         Legend,
         LegendItem,
+        Span,
         TableColumn,
         TabPanel,
         Tabs,
@@ -138,6 +139,44 @@ class BokehExporter:
             )
             page_children.append(
                 Tabs(tabs=analysis_panels, sizing_mode="stretch_width")
+            )
+
+        # ---- Buckling Onset section ----
+        buckling_panels = []
+        for b_data in export_data.get("buckling_tabs", []):
+            tab_name = b_data.get("name", "Buckling")
+            onset_cfg = b_data.get("onset", {})
+            figures = self._make_buckling_figures(onset_cfg)
+
+            # Append any extra loadstep/ratio graphs added to this buckling tab
+            for ls_data in b_data.get("extra_loadstep_graphs", []):
+                figures.append(
+                    self._make_loadstep_figure(
+                        ls_data.get("series", []),
+                        ls_data.get("title", "LoadStep Graph"),
+                    )
+                )
+            for rg_data in b_data.get("extra_ratio_graphs", []):
+                if rg_data and rg_data.get("sensors"):
+                    figures.append(self._make_ratio_figure(rg_data))
+
+            if figures:
+                grid = gridplot(
+                    [[f] for f in figures],
+                    sizing_mode="stretch_width",
+                    merge_tools=False,
+                )
+                buckling_panels.append(TabPanel(child=grid, title=tab_name))
+
+        if buckling_panels:
+            page_children.append(
+                Div(
+                    text='<p class="section-heading">Buckling Onset</p>',
+                    sizing_mode="stretch_width",
+                )
+            )
+            page_children.append(
+                Tabs(tabs=buckling_panels, sizing_mode="stretch_width")
             )
 
         if not page_children:
@@ -308,6 +347,111 @@ class BokehExporter:
                    line_color="#F57F17", line_dash="dashed", line_width=1)
 
         return p
+
+    # ------------------------------------------------------------------ #
+    # Buckling onset figures                                               #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _make_buckling_figures(cfg: dict) -> list:
+        """Build four Bokeh figures (SUP, INF, Membrane, Bending) from a
+        ``BucklingOnsetWidget.to_config()`` dict."""
+        element_id = cfg.get("element_id", "")
+        source_label = cfg.get("source_label", "")
+        onset_timesteps = cfg.get("onset_timesteps", [])
+        time = np.array(cfg.get("time", []), dtype=float)
+        sup_data = {k: np.array(v, dtype=float) for k, v in cfg.get("sup", {}).items()}
+        inf_data = {k: np.array(v, dtype=float) for k, v in cfg.get("inf", {}).items()}
+
+        src_tag = f"  [{source_label}]" if source_label else ""
+
+        _SERIES_COLORS = {"e11": "#1565C0", "e22": "#C62828", "e12": "#2E7D32"}
+        _ONSET_COLOR = "#FF6F00"
+
+        plot_specs = [
+            ("SUP",      "SUP Strain",      "sup"),
+            ("INF",      "INF Strain",      "inf"),
+            ("Membrane", "Membrane Strain", "membrane"),
+            ("Bending",  "Bending Strain",  "bending"),
+        ]
+
+        figures_out = []
+        for plot_key, y_label, mode in plot_specs:
+            title = f"{plot_key} Strain — Element {element_id}{src_tag}"
+            p = figure(
+                title=title,
+                x_axis_label="Step Time",
+                y_axis_label=y_label,
+                tools="pan,wheel_zoom,box_zoom,reset,save",
+                width=900,
+                height=400,
+                sizing_mode="stretch_width",
+            )
+            hover = HoverTool(tooltips=[
+                ("Component", "@comp"),
+                ("Step Time", "@x{0.000000}"),
+                ("Strain",    "@y{0.000000}"),
+            ])
+            p.add_tools(hover)
+
+            legend_items = []
+            for comp in ("e11", "e22", "e12"):
+                sup_arr = sup_data.get(comp, np.array([]))
+                inf_arr = inf_data.get(comp, np.array([]))
+
+                if mode == "sup":
+                    if len(sup_arr) != len(time):
+                        continue
+                    y = sup_arr
+                elif mode == "inf":
+                    if len(inf_arr) != len(time):
+                        continue
+                    y = inf_arr
+                elif mode == "membrane":
+                    if len(sup_arr) != len(time) or len(inf_arr) != len(time):
+                        continue
+                    y = (sup_arr + inf_arr) / 2.0
+                else:  # bending
+                    if len(sup_arr) != len(time) or len(inf_arr) != len(time):
+                        continue
+                    y = (sup_arr - inf_arr) / 2.0
+
+                color = _SERIES_COLORS.get(comp, "#000000")
+                src = ColumnDataSource({
+                    "x":    time.tolist(),
+                    "y":    y.tolist(),
+                    "comp": [comp] * len(time),
+                })
+                line = p.line("x", "y", source=src, line_color=color, line_width=2)
+                p.scatter("x", "y", source=src, color=color, size=6)
+                legend_items.append(LegendItem(label=comp, renderers=[line]))
+
+            # Dummy line for onset legend entry (Span does not support legend_label)
+            if onset_timesteps:
+                p.line(
+                    [], [],
+                    line_color=_ONSET_COLOR,
+                    line_dash="dashed",
+                    line_width=2,
+                    legend_label="Buckling Onset",
+                )
+                for ts in onset_timesteps:
+                    vline = Span(
+                        location=ts,
+                        dimension="height",
+                        line_color=_ONSET_COLOR,
+                        line_dash="dashed",
+                        line_width=2,
+                    )
+                    p.add_layout(vline)
+
+            if legend_items:
+                legend = Legend(items=legend_items, click_policy="hide")
+                p.add_layout(legend, "right")
+
+            figures_out.append(p)
+
+        return figures_out
 
     # ------------------------------------------------------------------ #
     # Legacy export (kept for backwards compatibility)                     #

@@ -1,9 +1,12 @@
 """Graph Presenter – handles data-to-graph wiring."""
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 from ..models.data_model import DataModel
 from ..models.graph_data_model import GraphDataModel
@@ -482,52 +485,70 @@ class GraphPresenter:
 
         for tab_cfg in tabs_config:
             tab_name = tab_cfg.get("tab_name", "Analysis")
+
+            # ---- Buckling onset tab ----
+            if tab_cfg.get("type") == "buckling_onset":
+                from ..views.buckling_onset_widget import BucklingOnsetWidget
+                try:
+                    onset_widget = BucklingOnsetWidget.from_config(tab_cfg)
+                    b_tab = tab_view.add_buckling_tab(onset_widget, tab_name)
+                    b_tab.set_columns(tab_cfg.get("num_columns", 1))
+                    # Restore any extra loadstep/ratio graphs added to this tab
+                    self._restore_graphs_into_tab(b_tab, tab_cfg)
+                except (KeyError, ValueError):
+                    log.warning("Could not restore buckling tab '%s'.", tab_name)
+                continue
+
+            # ---- Regular analysis tab ----
             tab = tab_view.add_tab(tab_name)
             # The tab was just created with default graphs; replace with saved ones.
             tab.clear_graphs()
             if "num_columns" in tab_cfg:
                 tab.set_columns(tab_cfg["num_columns"])
+            self._restore_graphs_into_tab(tab, tab_cfg)
 
-            # Build an ordered list of (type, cfg) pairs.
-            # New format: tab_cfg["graphs"] is a single ordered list with a "type" key.
-            # Old format: separate "loadstep_graphs" / "ratio_graphs" lists (interleaved
-            # order is lost — restore loadstep first then ratio as before).
-            if "graphs" in tab_cfg:
-                ordered = [(g.get("type", "loadstep"), g) for g in tab_cfg["graphs"]]
-            else:
-                ordered = [("loadstep", g) for g in tab_cfg.get("loadstep_graphs", [])]
-                ordered += [("ratio", g) for g in tab_cfg.get("ratio_graphs", [])]
+    def _restore_graphs_into_tab(self, tab, tab_cfg: dict) -> None:
+        """Restore loadstep and ratio graph entries from *tab_cfg* into *tab*."""
+        # Build an ordered list of (type, cfg) pairs.
+        # New format: tab_cfg["graphs"] is a single ordered list with a "type" key.
+        # Old format: separate "loadstep_graphs" / "ratio_graphs" lists (interleaved
+        # order is lost — restore loadstep first then ratio as before).
+        if "graphs" in tab_cfg:
+            ordered = [(g.get("type", "loadstep"), g) for g in tab_cfg["graphs"]]
+        else:
+            ordered = [("loadstep", g) for g in tab_cfg.get("loadstep_graphs", [])]
+            ordered += [("ratio", g) for g in tab_cfg.get("ratio_graphs", [])]
 
-            for gtype, gcfg in ordered:
-                if gtype == "loadstep":
-                    if isinstance(gcfg, list):
-                        gcfg = {"title": "", "series": gcfg}
-                    graph = tab.add_loadstep_graph(gcfg.get("title", ""))
-                    for s in gcfg.get("series", []):
-                        try:
-                            x, y = self._graph_data.get_loadstep_series(
-                                s["source_id"], s["sensor_name"]
-                            )
-                            style = SeriesStyle.from_dict(s.get("style", {}))
-                            graph.add_series(s["sensor_name"], s["source_id"], x, y, style)
-                        except (ValueError, KeyError):
-                            pass
-                elif gtype == "ratio":
-                    if not gcfg:
-                        continue
-                    rg = tab.add_ratio_graph(gcfg.get("title", ""))
-                    if gcfg.get("sensors"):
-                        rg.plot_ratio(
-                            gcfg["sensors"],
-                            gcfg["values_a"],
-                            gcfg["values_b"],
-                            gcfg["ratios"],
-                            load_step=gcfg.get("load_step", 0.0),
-                            label_a=gcfg.get("label_a", "Source A"),
-                            label_b=gcfg.get("label_b", "Source B"),
+        for gtype, gcfg in ordered:
+            if gtype == "loadstep":
+                if isinstance(gcfg, list):
+                    gcfg = {"title": "", "series": gcfg}
+                graph = tab.add_loadstep_graph(gcfg.get("title", ""))
+                for s in gcfg.get("series", []):
+                    try:
+                        x, y = self._graph_data.get_loadstep_series(
+                            s["source_id"], s["sensor_name"]
                         )
-                        for pct in gcfg.get("ref_bands", []):
-                            rg.add_slope_band(pct)
+                        style = SeriesStyle.from_dict(s.get("style", {}))
+                        graph.add_series(s["sensor_name"], s["source_id"], x, y, style)
+                    except (ValueError, KeyError):
+                        pass
+            elif gtype == "ratio":
+                if not gcfg:
+                    continue
+                rg = tab.add_ratio_graph(gcfg.get("title", ""))
+                if gcfg.get("sensors"):
+                    rg.plot_ratio(
+                        gcfg["sensors"],
+                        gcfg["values_a"],
+                        gcfg["values_b"],
+                        gcfg["ratios"],
+                        load_step=gcfg.get("load_step", 0.0),
+                        label_a=gcfg.get("label_a", "Source A"),
+                        label_b=gcfg.get("label_b", "Source B"),
+                    )
+                    for pct in gcfg.get("ref_bands", []):
+                        rg.add_slope_band(pct)
 
     # ------------------------------------------------------------------ #
     # Series customization                                                 #

@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QLabel,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -31,7 +30,11 @@ _PLOT_SPECS = [
 
 
 class BucklingOnsetWidget(QWidget):
-    """Tab content widget: SUP, INF, membrane, and bending strain history with onset markers.
+    """Content widget for a buckling onset tab: SUP, INF, membrane, and bending strain
+    history with onset markers.
+
+    This widget does NOT wrap itself in a QScrollArea — the parent tab content
+    (BucklingTabContent) owns the scroll area.
 
     Parameters
     ----------
@@ -64,31 +67,22 @@ class BucklingOnsetWidget(QWidget):
         super().__init__(parent)
         self._element_id = element_id
         self._source_label = source_label
-        self._build_ui(time, sup, inf, onset_timesteps)
+        # Store arrays for to_config() / export
+        self._time = np.asarray(time, dtype=float)
+        self._sup = {k: np.asarray(v, dtype=float) for k, v in sup.items()}
+        self._inf = {k: np.asarray(v, dtype=float) for k, v in inf.items()}
+        self._onset_timesteps = list(onset_timesteps)
+        self._build_ui()
 
     # ------------------------------------------------------------------ #
     # UI                                                                   #
     # ------------------------------------------------------------------ #
 
-    def _build_ui(
-        self,
-        time: np.ndarray,
-        sup: dict[str, np.ndarray],
-        inf: dict[str, np.ndarray],
-        onset_timesteps: list[float],
-    ) -> None:
-        root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(4, 4, 4, 4)
-        root_layout.setSpacing(4)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        inner = QVBoxLayout(container)
-        inner.setSpacing(16)
-        inner.setContentsMargins(8, 8, 8, 8)
-        scroll.setWidget(container)
-        root_layout.addWidget(scroll)
+    def _build_ui(self) -> None:
+        """Four plots stacked vertically (no scroll area — owned by parent tab)."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(16)
 
         # Source header banner
         if self._source_label:
@@ -101,13 +95,13 @@ class BucklingOnsetWidget(QWidget):
                 "color: #1565C0; background: #E3F2FD; "
                 "border-radius: 4px; padding: 6px 10px;"
             )
-            inner.addWidget(banner)
+            layout.addWidget(banner)
 
         # Four plots: SUP → INF → Membrane → Bending
         for plot_key, y_label, _ in _PLOT_SPECS:
-            inner.addWidget(self._make_plot(plot_key, y_label, time, sup, inf, onset_timesteps))
-
-        inner.addStretch()
+            layout.addWidget(
+                self._make_plot(plot_key, y_label, self._time, self._sup, self._inf, self._onset_timesteps)
+            )
 
     def _make_plot(
         self,
@@ -118,8 +112,8 @@ class BucklingOnsetWidget(QWidget):
         inf: dict[str, np.ndarray],
         onset_timesteps: list[float],
     ) -> pg.PlotWidget:
-        """Build one pyqtgraph PlotWidget for *plot_key* (``"SUP"``, ``"INF"``,
-        ``"Membrane"``, or ``"Bending"``)."""
+        """Build one pyqtgraph PlotWidget for *plot_key*
+        (``"SUP"``, ``"INF"``, ``"Membrane"``, or ``"Bending"``)."""
         src_tag = f"  [{self._source_label}]" if self._source_label else ""
         title = f"{plot_key} Strain — Element {self._element_id}{src_tag}"
 
@@ -191,3 +185,31 @@ class BucklingOnsetWidget(QWidget):
             plot.addItem(vline)
 
         return plot
+
+    # ------------------------------------------------------------------ #
+    # Serialisation                                                        #
+    # ------------------------------------------------------------------ #
+
+    def to_config(self) -> dict:
+        """Return a JSON-serialisable dict representing this widget's data."""
+        return {
+            "type": "buckling_onset",
+            "element_id": self._element_id,
+            "source_label": self._source_label,
+            "onset_timesteps": list(self._onset_timesteps),
+            "time": self._time.tolist(),
+            "sup": {k: v.tolist() for k, v in self._sup.items()},
+            "inf": {k: v.tolist() for k, v in self._inf.items()},
+        }
+
+    @staticmethod
+    def from_config(cfg: dict) -> "BucklingOnsetWidget":
+        """Reconstruct a widget from a previously saved config dict."""
+        return BucklingOnsetWidget(
+            element_id=cfg["element_id"],
+            time=np.array(cfg["time"], dtype=float),
+            sup={k: np.array(v, dtype=float) for k, v in cfg.get("sup", {}).items()},
+            inf={k: np.array(v, dtype=float) for k, v in cfg.get("inf", {}).items()},
+            onset_timesteps=cfg.get("onset_timesteps", []),
+            source_label=cfg.get("source_label", ""),
+        )

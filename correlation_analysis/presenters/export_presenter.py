@@ -42,7 +42,7 @@ class ExportPresenter:
                     "df": ds.df,
                 })
 
-            # ---- Collect analysis tabs ----
+            # ---- Collect regular analysis tabs ----
             tabs = []
             for tab_content in tab_view.all_tabs():
                 tab_name = tab_view.get_tab_name(tab_content.tab_id)
@@ -69,7 +69,7 @@ class ExportPresenter:
                 # Ratio graphs
                 ratio_graphs = []
                 for rg in tab_content.get_ratio_graphs():
-                    ratio_graphs.append(rg.get_export_data())  # None if nothing plotted
+                    ratio_graphs.append(rg.get_export_data())
 
                 tabs.append({
                     "name": tab_name,
@@ -78,7 +78,48 @@ class ExportPresenter:
                     "ratio_graphs": ratio_graphs,
                 })
 
-            export_data = {"sources": sources, "tabs": tabs}
+            # ---- Collect buckling onset tabs ----
+            buckling_tabs = []
+            for b_tab in tab_view.all_buckling_tabs():
+                b_tab_name = tab_view.get_tab_name(b_tab.tab_id)
+                onset_cfg = b_tab.get_onset_widget().to_config()
+
+                # Also collect any extra loadstep/ratio graphs added to this buckling tab
+                extra_loadstep = []
+                for graph in b_tab.get_loadstep_graphs():
+                    series_list = []
+                    for key in graph.series_keys():
+                        info = graph.get_series_info(key)
+                        if info:
+                            series_list.append({
+                                "sensor_name": info["sensor_name"],
+                                "source_id": info["source_id"],
+                                "x": info["x"].tolist(),
+                                "y": info["y"].tolist(),
+                                "style": info["style"].to_dict(),
+                            })
+                    extra_loadstep.append({
+                        "title": graph.get_title(),
+                        "series": series_list,
+                    })
+
+                extra_ratio = []
+                for rg in b_tab.get_ratio_graphs():
+                    extra_ratio.append(rg.get_export_data())
+
+                buckling_tabs.append({
+                    "name": b_tab_name,
+                    "onset": onset_cfg,
+                    "num_columns": b_tab._num_columns,
+                    "extra_loadstep_graphs": extra_loadstep,
+                    "extra_ratio_graphs": extra_ratio,
+                })
+
+            export_data = {
+                "sources": sources,
+                "tabs": tabs,
+                "buckling_tabs": buckling_tabs,
+            }
 
             exporter = BokehExporter()
             exporter.export_full(export_data, filepath)
@@ -96,7 +137,8 @@ class ExportPresenter:
         try:
             tab_view = self._window.analysis_view.get_tab_view()
             data_model = self._analysis._data
-            _export_csv_util(filepath, tab_view, data_model)
+            buckling_tabs = tab_view.all_buckling_tabs()
+            _export_csv_util(filepath, tab_view, data_model, buckling_tabs)
             self._window.show_status(f"Exported to CSV: {filepath}")
             QMessageBox.information(
                 self._window,

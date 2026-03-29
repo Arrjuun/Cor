@@ -485,7 +485,7 @@ class AnalysisPresenter:
             display_id = sensor_names[0] if sensor_names else original_id
 
             from ..views.buckling_onset_widget import BucklingOnsetWidget
-            widget = BucklingOnsetWidget(
+            onset_widget = BucklingOnsetWidget(
                 element_id=display_id,
                 time=time,
                 sup=sup,
@@ -493,7 +493,7 @@ class AnalysisPresenter:
                 onset_timesteps=onset_timesteps,
                 source_label=source_label,
             )
-            tab_view.add_raw_tab(widget, f"Onset: {display_id}")
+            tab_view.add_buckling_tab(onset_widget, f"Onset: {display_id}")
             count += 1
 
         if count == 0:
