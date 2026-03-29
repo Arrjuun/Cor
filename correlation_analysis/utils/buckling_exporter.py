@@ -46,52 +46,30 @@ _COR_TYPES = ["e11", "e22", "e12"]
 # CSV generation                                                       #
 # ------------------------------------------------------------------ #
 
-def _merge_time_series(series_list: list[pd.Series]) -> pd.Series | None:
-    """Merge multiple time-indexed Series onto one axis.
-
-    At time points present in more than one series the values are averaged;
-    at time points present in only one series the value is taken as-is.
-    NaN values are ignored during the merge.
-    """
-    if not series_list:
-        return None
-    if len(series_list) == 1:
-        return series_list[0]
-
-    time_values: dict[float, list[float]] = {}
-    for s in series_list:
-        for idx in s.index:
-            if not isinstance(idx, (int, float)) or pd.isna(idx):
-                continue
-            v = s[idx]
-            if not pd.isna(v):
-                time_values.setdefault(float(idx), []).append(float(v))
-
-    if not time_values:
-        return None
-
-    times = sorted(time_values.keys())
-    return pd.Series([float(np.mean(time_values[t])) for t in times], index=times)
-
-
 def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     """Convert checked-group selections to the buckling analysis CSV format.
 
-    SUP columns are populated from the **left** side of each dialog row and
-    INF columns from the **right** side, matching the visual layout regardless
-    of which source file each side originates from.
+    SUP columns are populated from **data source A** (the first loaded source)
+    and INF columns from **data source B** (the second loaded source).
 
-    For rosette groups, all per-source group instances that share the same
-    ``rosette_id`` are merged onto a single union time axis before emission.
-    Values at time points present in only one source are linearly interpolated
-    from that source's data; values at overlapping time points are averaged.
+    For rosette groups, ``_build_buckling_groups`` creates one entry per
+    rosette×source so that the dialog can show per-source sparklines.  At
+    CSV-generation time all entries sharing the same ``rosette_id`` are
+    combined into one element with a single union time axis:
+
+    * SUP series ← own-rosette sensor from the **first** source group (A).
+    * INF series ← own-rosette sensor from the **second** source group (B).
+    * Values at time points that exist in a source are written as-is.
+    * Values at time points that exist only in the other source are linearly
+      interpolated from that side's data — no cross-source mixing or averaging.
+
+    For individual (non-rosette) groups the original behaviour is preserved:
+    ``sources[0]`` → SUP (source A), ``sources[1]`` → INF (source B).
 
     Parameters
     ----------
     selections:
         List of group-selection dicts from ``BucklingDialog.analyze_requested``.
-        ``sensors[*]["sources"]`` is an ordered list where index 0 = left (SUP)
-        and index 1 = right (INF).
     data_model:
         Used to look up sensor strain series by source_id and sensor name.
 
@@ -104,10 +82,9 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
 
     # ── Bucket rosette groups by rosette_id ──────────────────────────────
     # _build_buckling_groups creates one BucklingGroup per rosette×source so
-    # that the dialog can show per-source sparklines.  At CSV-generation time
-    # we must treat all groups that share a rosette_id as one element and
-    # merge their time series, otherwise each source produces a separate block
-    # of rows for the same ElementID.
+    # the dialog can show per-source sparklines.  Here we re-group them so
+    # that each unique rosette emits exactly one block of CSV rows.
+    # Bucket order preserves source-import order: bucket[0] = source A, etc.
     rosette_buckets: dict[str, list[dict]] = {}
     non_rosette_groups: list[dict] = []
     for group in selections:
@@ -116,7 +93,7 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
         else:
             non_rosette_groups.append(group)
 
-    # ── Nested helpers ───────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────────
 
     def _fetch(entry: dict) -> pd.Series | None:
         src_id = entry.get("source_id", "")
@@ -128,32 +105,15 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
             return None
         return df.loc[sname]
 
-    def _collect_series(
-        groups: list[dict],
-    ) -> tuple[dict[str, pd.Series | None], dict[str, pd.Series | None]]:
-        """Build merged (cor_sup, cor_inf) from one or more group dicts."""
-        sup_lists: dict[str, list[pd.Series]] = {}
-        inf_lists: dict[str, list[pd.Series]] = {}
-        for group in groups:
-            for sensor in group["sensors"]:
-                cor = sensor["cor"]
-                sources_list: list[dict] = sensor.get("sources", [])
-                if len(sources_list) > 0:
-                    s = _fetch(sources_list[0])
-                    if s is not None:
-                        sup_lists.setdefault(cor, []).append(s)
-                if len(sources_list) > 1:
-                    s = _fetch(sources_list[1])
-                    if s is not None:
-                        inf_lists.setdefault(cor, []).append(s)
-        cor_sup = {cor: _merge_time_series(sl) for cor, sl in sup_lists.items()}
-        cor_inf = {cor: _merge_time_series(il) for cor, il in inf_lists.items()}
-        return cor_sup, cor_inf
-
     def _interp_onto(
         series: pd.Series | None, sorted_times: list[float]
     ) -> dict[float, float]:
-        """Return {time: value} for *series* interpolated onto *sorted_times*."""
+        """Interpolate *series* onto *sorted_times*.
+
+        Existing data points are returned unchanged.  Time points that fall
+        between existing points are linearly interpolated.  Time points outside
+        the series range produce NaN (no extrapolation).
+        """
         if series is None:
             return {}
         x = np.array(
@@ -203,16 +163,72 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
             rows.append(row)
 
     # ── Non-rosette (individual sensor) groups ───────────────────────────
+    # sources[0] = source A → SUP, sources[1] = source B → INF.
+    # Each individual canonical has a single BucklingGroup containing all
+    # sources in its sources list, so no bucketing is needed here.
     for group in non_rosette_groups:
-        left_info = (group["sensors"][0]["sources"] or [{}])[0] if group["sensors"] else {}
-        name = left_info.get("sensor_name", "")
+        cor_sup: dict[str, pd.Series | None] = {}
+        cor_inf: dict[str, pd.Series | None] = {}
+        first_sup_entry: dict = {}
+
+        for sensor in group["sensors"]:
+            cor = sensor["cor"]
+            sources_list: list[dict] = sensor.get("sources", [])
+            if len(sources_list) > 0:
+                if not first_sup_entry:
+                    first_sup_entry = sources_list[0]
+                s = _fetch(sources_list[0])
+                if s is not None:
+                    cor_sup[cor] = s
+            if len(sources_list) > 1:
+                s = _fetch(sources_list[1])
+                if s is not None:
+                    cor_inf[cor] = s
+
+        name = first_sup_entry.get("sensor_name", "")
         element_id = name if name and name != "—" else group["pair_id"]
-        cor_sup, cor_inf = _collect_series([group])
         _emit_element_rows(element_id, False, cor_sup, cor_inf)
 
-    # ── Rosette groups: merge all per-source instances into one element ───
+    # ── Rosette groups: source A → SUP, source B → INF ───────────────────
+    # bucket[0] = group from source A (SUP), bucket[1] = group from source B (INF).
+    # Within each per-source group, sources[0] is the own-rosette sensor.
+    # The two sides are kept strictly separate — no cross-source mixing.
+    # The union time axis covers all time steps from both sources; each side
+    # is independently interpolated onto it so existing values are unchanged.
     for rosette_id, bucket in rosette_buckets.items():
-        cor_sup, cor_inf = _collect_series(bucket)
+        cor_sup = {}
+        cor_inf = {}
+
+        if len(bucket) >= 2:
+            # Two or more sources: source A (bucket[0]) → SUP, source B (bucket[1]) → INF.
+            for sensor in bucket[0]["sensors"]:
+                cor = sensor["cor"]
+                sources_list = sensor.get("sources", [])
+                if sources_list:
+                    s = _fetch(sources_list[0])
+                    if s is not None:
+                        cor_sup[cor] = s
+            for sensor in bucket[1]["sensors"]:
+                cor = sensor["cor"]
+                sources_list = sensor.get("sources", [])
+                if sources_list:
+                    s = _fetch(sources_list[0])
+                    if s is not None:
+                        cor_inf[cor] = s
+        else:
+            # Single source: own rosette (sources[0]) → SUP, paired rosette (sources[1]) → INF.
+            for sensor in bucket[0]["sensors"]:
+                cor = sensor["cor"]
+                sources_list = sensor.get("sources", [])
+                if len(sources_list) > 0:
+                    s = _fetch(sources_list[0])
+                    if s is not None:
+                        cor_sup[cor] = s
+                if len(sources_list) > 1:
+                    s = _fetch(sources_list[1])
+                    if s is not None:
+                        cor_inf[cor] = s
+
         _emit_element_rows(rosette_id, True, cor_sup, cor_inf)
 
     if rows:
