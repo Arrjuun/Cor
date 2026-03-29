@@ -8,6 +8,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QGridLayout,
     QLabel,
     QVBoxLayout,
     QWidget,
@@ -79,7 +80,7 @@ class BucklingOnsetWidget(QWidget):
     # ------------------------------------------------------------------ #
 
     def _build_ui(self) -> None:
-        """Four plots stacked vertically (no scroll area — owned by parent tab)."""
+        """Four plots arranged in a grid (no scroll area — owned by parent tab)."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(16)
@@ -97,11 +98,34 @@ class BucklingOnsetWidget(QWidget):
             )
             layout.addWidget(banner)
 
-        # Four plots: SUP → INF → Membrane → Bending
+        # Grid container for the four plots
+        self._plots_container = QWidget()
+        self._plots_grid = QGridLayout(self._plots_container)
+        self._plots_grid.setSpacing(8)
+        layout.addWidget(self._plots_container)
+
+        # Build the four plot widgets: SUP → INF → Membrane → Bending
+        self._plot_widgets: list[pg.PlotWidget] = []
         for plot_key, y_label, _ in _PLOT_SPECS:
-            layout.addWidget(
-                self._make_plot(plot_key, y_label, self._time, self._sup, self._inf, self._onset_timesteps)
-            )
+            pw = self._make_plot(plot_key, y_label, self._time, self._sup, self._inf, self._onset_timesteps)
+            self._plot_widgets.append(pw)
+
+        self._num_columns = 1
+        self._relayout_plots()
+
+    def _relayout_plots(self) -> None:
+        """Re-place all onset plots in the grid according to current column count."""
+        for pw in self._plot_widgets:
+            self._plots_grid.removeWidget(pw)
+        for i, pw in enumerate(self._plot_widgets):
+            row = i // self._num_columns
+            col = i % self._num_columns
+            self._plots_grid.addWidget(pw, row, col)
+
+    def set_columns(self, n: int) -> None:
+        """Rearrange the four onset plots into *n* columns."""
+        self._num_columns = max(1, min(4, n))
+        self._relayout_plots()
 
     def _make_plot(
         self,

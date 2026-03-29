@@ -179,15 +179,17 @@ class MainWindow(QMainWindow):
     def _on_save_session(self) -> None:
         filepath, _ = QFileDialog.getSaveFileName(
             self, "Save Session",
-            filter="Correlation Session (*.csa);;JSON Files (*.json)"
+            filter="JSON Files (*.json)"
         )
         if filepath:
+            if not filepath.endswith(".json"):
+                filepath += ".json"
             self.save_session_requested.emit(filepath)
 
     def _on_load_session(self) -> None:
         filepath, _ = QFileDialog.getOpenFileName(
             self, "Open Session",
-            filter="Correlation Session (*.csa *.json)"
+            filter="JSON Files (*.json)"
         )
         if filepath:
             self.load_session_requested.emit(filepath)
@@ -198,6 +200,8 @@ class MainWindow(QMainWindow):
             filter="HTML Files (*.html)"
         )
         if filepath:
+            if not filepath.endswith(".html"):
+                filepath += ".html"
             self.export_html_requested.emit(filepath)
 
     def _on_export_csv(self) -> None:
@@ -206,6 +210,8 @@ class MainWindow(QMainWindow):
             filter="CSV Files (*.csv)"
         )
         if filepath:
+            if not filepath.endswith(".csv"):
+                filepath += ".csv"
             self.export_csv_requested.emit(filepath)
 
     def _on_vsg_extraction(self) -> None:

@@ -211,6 +211,17 @@ class BucklingTabContent(GraphTabContent):
         """Buckling tabs start with no default graphs."""
         pass  # do not create default loadstep/ratio graphs
 
+    def _on_columns_changed(self, value: int) -> None:
+        self._num_columns = value
+        self._relayout_graphs()
+        self._onset_widget.set_columns(value)
+
+    def set_columns(self, n: int) -> None:
+        self._num_columns = max(1, min(6, n))
+        self._col_spin.setValue(self._num_columns)
+        self._relayout_graphs()
+        self._onset_widget.set_columns(self._num_columns)
+
     def get_onset_widget(self) -> BucklingOnsetWidget:
         return self._onset_widget
 
