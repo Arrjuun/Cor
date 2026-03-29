@@ -46,6 +46,34 @@ _COR_TYPES = ["e11", "e22", "e12"]
 # CSV generation                                                       #
 # ------------------------------------------------------------------ #
 
+def _merge_time_series(series_list: list[pd.Series]) -> pd.Series | None:
+    """Merge multiple time-indexed Series onto one axis.
+
+    At time points present in more than one series the values are averaged;
+    at time points present in only one series the value is taken as-is.
+    NaN values are ignored during the merge.
+    """
+    if not series_list:
+        return None
+    if len(series_list) == 1:
+        return series_list[0]
+
+    time_values: dict[float, list[float]] = {}
+    for s in series_list:
+        for idx in s.index:
+            if not isinstance(idx, (int, float)) or pd.isna(idx):
+                continue
+            v = s[idx]
+            if not pd.isna(v):
+                time_values.setdefault(float(idx), []).append(float(v))
+
+    if not time_values:
+        return None
+
+    times = sorted(time_values.keys())
+    return pd.Series([float(np.mean(time_values[t])) for t in times], index=times)
+
+
 def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     """Convert checked-group selections to the buckling analysis CSV format.
 
@@ -53,9 +81,10 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     INF columns from the **right** side, matching the visual layout regardless
     of which source file each side originates from.
 
-    Load steps are taken as the union of all time values across left and right
-    sensors; values at time points that exist only on one side are linearly
-    interpolated from that side's data.
+    For rosette groups, all per-source group instances that share the same
+    ``rosette_id`` are merged onto a single union time axis before emission.
+    Values at time points present in only one source are linearly interpolated
+    from that source's data; values at overlapping time points are averaged.
 
     Parameters
     ----------
@@ -73,98 +102,118 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     """
     rows: list[dict] = []
 
+    # ── Bucket rosette groups by rosette_id ──────────────────────────────
+    # _build_buckling_groups creates one BucklingGroup per rosette×source so
+    # that the dialog can show per-source sparklines.  At CSV-generation time
+    # we must treat all groups that share a rosette_id as one element and
+    # merge their time series, otherwise each source produces a separate block
+    # of rows for the same ElementID.
+    rosette_buckets: dict[str, list[dict]] = {}
+    non_rosette_groups: list[dict] = []
     for group in selections:
-        # ---- ElementID --------------------------------------------------
         if group.get("is_rosette") and group.get("rosette_id"):
-            element_id = group["rosette_id"]
+            rosette_buckets.setdefault(group["rosette_id"], []).append(group)
         else:
-            left_info = (group["sensors"][0]["sources"] or [{}])[0] if group["sensors"] else {}
-            name = left_info.get("sensor_name", "")
-            element_id = name if name and name != "—" else group["pair_id"]
+            non_rosette_groups.append(group)
 
-        # ---- Collect left (SUP) and right (INF) series per cor ----------
-        # cor_sup / cor_inf: {cor_type: pd.Series}
-        cor_sup: dict[str, pd.Series] = {}
-        cor_inf: dict[str, pd.Series] = {}
+    # ── Nested helpers ───────────────────────────────────────────────────
 
-        for sensor in group["sensors"]:
-            cor = sensor["cor"]
-            sources_list: list[dict] = sensor.get("sources", [])
+    def _fetch(entry: dict) -> pd.Series | None:
+        src_id = entry.get("source_id", "")
+        sname = entry.get("sensor_name", "")
+        if not sname or sname == "—":
+            return None
+        df = data_model.get_dataframe(src_id)
+        if df is None or sname not in df.index:
+            return None
+        return df.loc[sname]
 
-            def _fetch(entry: dict) -> pd.Series | None:
-                src_id = entry.get("source_id", "")
-                sname = entry.get("sensor_name", "")
-                if not sname or sname == "—":
-                    return None
-                df = data_model.get_dataframe(src_id)
-                if df is None or sname not in df.index:
-                    return None
-                return df.loc[sname]
+    def _collect_series(
+        groups: list[dict],
+    ) -> tuple[dict[str, pd.Series | None], dict[str, pd.Series | None]]:
+        """Build merged (cor_sup, cor_inf) from one or more group dicts."""
+        sup_lists: dict[str, list[pd.Series]] = {}
+        inf_lists: dict[str, list[pd.Series]] = {}
+        for group in groups:
+            for sensor in group["sensors"]:
+                cor = sensor["cor"]
+                sources_list: list[dict] = sensor.get("sources", [])
+                if len(sources_list) > 0:
+                    s = _fetch(sources_list[0])
+                    if s is not None:
+                        sup_lists.setdefault(cor, []).append(s)
+                if len(sources_list) > 1:
+                    s = _fetch(sources_list[1])
+                    if s is not None:
+                        inf_lists.setdefault(cor, []).append(s)
+        cor_sup = {cor: _merge_time_series(sl) for cor, sl in sup_lists.items()}
+        cor_inf = {cor: _merge_time_series(il) for cor, il in inf_lists.items()}
+        return cor_sup, cor_inf
 
-            if len(sources_list) > 0:
-                s = _fetch(sources_list[0])
-                if s is not None:
-                    cor_sup[cor] = s
-            if len(sources_list) > 1:
-                s = _fetch(sources_list[1])
-                if s is not None:
-                    cor_inf[cor] = s
+    def _interp_onto(
+        series: pd.Series | None, sorted_times: list[float]
+    ) -> dict[float, float]:
+        """Return {time: value} for *series* interpolated onto *sorted_times*."""
+        if series is None:
+            return {}
+        x = np.array(
+            [float(v) for v in series.index if isinstance(v, (int, float)) and not pd.isna(v)],
+            dtype=float,
+        )
+        y = np.array(
+            [series[v] for v in series.index if isinstance(v, (int, float)) and not pd.isna(v)],
+            dtype=float,
+        )
+        if len(x) == 0:
+            return {}
+        result: dict[float, float] = {}
+        for t in sorted_times:
+            if t < x[0] or t > x[-1]:
+                result[t] = float("nan")
+            else:
+                result[t] = float(np.interp(t, x, y))
+        return result
 
-        # ---- Union time axis --------------------------------------------
+    def _emit_element_rows(
+        element_id: str,
+        is_rosette: bool,
+        cor_sup: dict[str, pd.Series | None],
+        cor_inf: dict[str, pd.Series | None],
+    ) -> None:
         all_times: set[float] = set()
         for series in list(cor_sup.values()) + list(cor_inf.values()):
-            all_times.update(
-                float(v) for v in series.index
-                if isinstance(v, (int, float)) and not pd.isna(v)
-            )
-
+            if series is not None:
+                all_times.update(
+                    float(v) for v in series.index
+                    if isinstance(v, (int, float)) and not pd.isna(v)
+                )
         if not all_times:
-            continue
+            return
 
         sorted_times = sorted(all_times)
+        sup_lookup = {cor: _interp_onto(cor_sup.get(cor), sorted_times) for cor in _COR_TYPES}
+        inf_lookup = {cor: _interp_onto(cor_inf.get(cor), sorted_times) for cor in _COR_TYPES}
+        missing_fill = float("nan") if is_rosette else 0.0
 
-        # ---- Pre-interpolate each series onto the common time axis ------
-        def _interp_series(series: pd.Series | None) -> dict[float, float]:
-            """Return {time: value} interpolated onto sorted_times."""
-            if series is None:
-                return {}
-            x = np.array([float(v) for v in series.index
-                          if isinstance(v, (int, float)) and not pd.isna(v)],
-                         dtype=float)
-            y = np.array([series[v] for v in series.index
-                          if isinstance(v, (int, float)) and not pd.isna(v)],
-                         dtype=float)
-            if len(x) == 0:
-                return {}
-            # Only interpolate within the data range; outside → NaN
-            result = {}
-            for t in sorted_times:
-                if t < x[0] or t > x[-1]:
-                    result[t] = float("nan")
-                else:
-                    result[t] = float(np.interp(t, x, y))
-            return result
-
-        sup_lookup: dict[str, dict[float, float]] = {
-            cor: _interp_series(cor_sup.get(cor)) for cor in _COR_TYPES
-        }
-        inf_lookup: dict[str, dict[float, float]] = {
-            cor: _interp_series(cor_inf.get(cor)) for cor in _COR_TYPES
-        }
-
-        # ---- Build rows -------------------------------------------------
-        is_rosette = group.get("is_rosette", False)
         for t in sorted_times:
-            row: dict[str, Any] = {
-                "LoadCase": "LC1",
-                "ElementID": element_id,
-                "Time": t,
-            }
+            row: dict[str, Any] = {"LoadCase": "LC1", "ElementID": element_id, "Time": t}
             for cor in _COR_TYPES:
-                missing_fill = float("nan") if is_rosette else 0.0
                 row[f"SUP_{cor}"] = sup_lookup[cor].get(t, missing_fill)
                 row[f"INF_{cor}"] = inf_lookup[cor].get(t, missing_fill)
             rows.append(row)
+
+    # ── Non-rosette (individual sensor) groups ───────────────────────────
+    for group in non_rosette_groups:
+        left_info = (group["sensors"][0]["sources"] or [{}])[0] if group["sensors"] else {}
+        name = left_info.get("sensor_name", "")
+        element_id = name if name and name != "—" else group["pair_id"]
+        cor_sup, cor_inf = _collect_series([group])
+        _emit_element_rows(element_id, False, cor_sup, cor_inf)
+
+    # ── Rosette groups: merge all per-source instances into one element ───
+    for rosette_id, bucket in rosette_buckets.items():
+        cor_sup, cor_inf = _collect_series(bucket)
+        _emit_element_rows(rosette_id, True, cor_sup, cor_inf)
 
     if rows:
         return pd.DataFrame(rows, columns=_CSV_COLUMNS)
