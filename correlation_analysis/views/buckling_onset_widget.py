@@ -1,4 +1,4 @@
-"""Widget displaying membrane and bending strain history for a buckling onset element."""
+"""Widget displaying SUP, INF, membrane, and bending strain history for a buckling onset element."""
 from __future__ import annotations
 
 from typing import Optional
@@ -6,6 +6,7 @@ from typing import Optional
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QLabel,
     QScrollArea,
@@ -20,9 +21,17 @@ _SERIES_COLORS = {
 }
 _ONSET_COLOR = "#FF6F00"
 
+# Plot-type descriptors: (key, y-axis label, derivation note)
+_PLOT_SPECS = [
+    ("SUP",      "SUP Strain",      "Raw superior-surface strain from the data source"),
+    ("INF",      "INF Strain",      "Raw inferior-surface strain from the data source"),
+    ("Membrane", "Membrane Strain", "(SUP + INF) / 2"),
+    ("Bending",  "Bending Strain",  "(SUP − INF) / 2"),
+]
+
 
 class BucklingOnsetWidget(QWidget):
-    """Tab content widget: membrane + bending strain history with onset markers.
+    """Tab content widget: SUP, INF, membrane, and bending strain history with onset markers.
 
     Parameters
     ----------
@@ -36,7 +45,10 @@ class BucklingOnsetWidget(QWidget):
         Dict mapping ``"e11"``, ``"e22"``, ``"e12"`` to INF (inferior) strain arrays.
     onset_timesteps:
         List of timestep values where buckling onset was detected; a vertical dashed
-        line is drawn at each one on both plots.
+        line is drawn at each one on all plots.
+    source_label:
+        Display name of the data source this element's strains came from
+        (e.g. ``"source_a.csv"``).  Shown in the widget header and plot titles.
     """
 
     def __init__(
@@ -46,10 +58,12 @@ class BucklingOnsetWidget(QWidget):
         sup: dict[str, np.ndarray],
         inf: dict[str, np.ndarray],
         onset_timesteps: list[float],
+        source_label: str = "",
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._element_id = element_id
+        self._source_label = source_label
         self._build_ui(time, sup, inf, onset_timesteps)
 
     # ------------------------------------------------------------------ #
@@ -67,7 +81,6 @@ class BucklingOnsetWidget(QWidget):
         root_layout.setContentsMargins(4, 4, 4, 4)
         root_layout.setSpacing(4)
 
-        # Scrollable container for both plots
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         container = QWidget()
@@ -77,41 +90,73 @@ class BucklingOnsetWidget(QWidget):
         scroll.setWidget(container)
         root_layout.addWidget(scroll)
 
-        # Build membrane plot, then bending plot
-        for plot_type in ("Membrane", "Bending"):
-            plot_widget = self._make_plot(plot_type, time, sup, inf, onset_timesteps)
-            inner.addWidget(plot_widget)
+        # Source header banner
+        if self._source_label:
+            banner = QLabel(f"Data Source:  {self._source_label}")
+            font = QFont()
+            font.setBold(True)
+            font.setPointSize(11)
+            banner.setFont(font)
+            banner.setStyleSheet(
+                "color: #1565C0; background: #E3F2FD; "
+                "border-radius: 4px; padding: 6px 10px;"
+            )
+            inner.addWidget(banner)
+
+        # Four plots: SUP → INF → Membrane → Bending
+        for plot_key, y_label, _ in _PLOT_SPECS:
+            inner.addWidget(self._make_plot(plot_key, y_label, time, sup, inf, onset_timesteps))
 
         inner.addStretch()
 
     def _make_plot(
         self,
-        plot_type: str,
+        plot_key: str,
+        y_label: str,
         time: np.ndarray,
         sup: dict[str, np.ndarray],
         inf: dict[str, np.ndarray],
         onset_timesteps: list[float],
     ) -> pg.PlotWidget:
-        """Create and return one pyqtgraph PlotWidget for *plot_type* (Membrane or Bending)."""
-        title = f"{plot_type} Strain History - Element {self._element_id}"
+        """Build one pyqtgraph PlotWidget for *plot_key* (``"SUP"``, ``"INF"``,
+        ``"Membrane"``, or ``"Bending"``)."""
+        src_tag = f"  [{self._source_label}]" if self._source_label else ""
+        title = f"{plot_key} Strain — Element {self._element_id}{src_tag}"
+
         plot = pg.PlotWidget(title=title)
         plot.setBackground("w")
         plot.showGrid(x=True, y=True, alpha=0.3)
         plot.setLabel("bottom", "Step Time")
-        plot.setLabel("left", f"{plot_type} Strain")
-        plot.setMinimumHeight(380)
+        plot.setLabel("left", y_label)
+        plot.setMinimumHeight(360)
         plot.addLegend(offset=(10, 10))
 
-        # Plot each strain component
         for comp in ("e11", "e22", "e12"):
             sup_arr = sup.get(comp)
             inf_arr = inf.get(comp)
-            if sup_arr is None or inf_arr is None:
-                continue
-            if len(sup_arr) != len(time) or len(inf_arr) != len(time):
-                continue
 
-            y = (sup_arr + inf_arr) / 2.0 if plot_type == "Membrane" else (sup_arr - inf_arr) / 2.0
+            # Determine the y-values for this plot type
+            if plot_key == "SUP":
+                if sup_arr is None or len(sup_arr) != len(time):
+                    continue
+                y = sup_arr
+            elif plot_key == "INF":
+                if inf_arr is None or len(inf_arr) != len(time):
+                    continue
+                y = inf_arr
+            elif plot_key == "Membrane":
+                if sup_arr is None or inf_arr is None:
+                    continue
+                if len(sup_arr) != len(time) or len(inf_arr) != len(time):
+                    continue
+                y = (sup_arr + inf_arr) / 2.0
+            else:  # Bending
+                if sup_arr is None or inf_arr is None:
+                    continue
+                if len(sup_arr) != len(time) or len(inf_arr) != len(time):
+                    continue
+                y = (sup_arr - inf_arr) / 2.0
+
             color = _SERIES_COLORS.get(comp, "#000000")
             pen = pg.mkPen(color=color, width=2, cosmetic=True)
             plot.plot(
@@ -130,13 +175,12 @@ class BucklingOnsetWidget(QWidget):
             style=Qt.PenStyle.DashLine, cosmetic=True,
         )
         for ts in onset_timesteps:
-            label_text = f"Buckling Onset\nStep Time = {ts:.6f}"
             vline = pg.InfiniteLine(
                 pos=ts,
                 angle=90,
                 movable=False,
                 pen=onset_pen,
-                label=label_text,
+                label=f"Buckling Onset\nStep Time = {ts:.6f}",
                 labelOpts={
                     "position": 0.90,
                     "color": _ONSET_COLOR,

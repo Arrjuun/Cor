@@ -227,7 +227,7 @@ class AnalysisPresenter:
 
         settings = export_dlg.get_settings()
         try:
-            csv_path, yaml_path = write_export(selections, self._data, settings)
+            csv_path, yaml_path, element_source_map = write_export(selections, self._data, settings)
         except Exception as exc:
             log.exception("Buckling export failed: %s", exc)
             QMessageBox.critical(
@@ -269,6 +269,7 @@ class AnalysisPresenter:
             csv_path,
             settings.output_dir,
             settings.fembuckling_dir,
+            element_source_map,
         )
 
     def _run_buckling_script(
@@ -278,6 +279,7 @@ class AnalysisPresenter:
         input_csv_path: str,
         output_dir: str,
         fembuckling_dir: str = "",
+        element_source_map: dict | None = None,
     ) -> None:
         """Launch fembuckling.onset via the specified Python executable and process its output.
 
@@ -349,10 +351,17 @@ class AnalysisPresenter:
             return
 
         log.info("Buckling onset script finished with exit code 0.")
-        self._load_onset_results(input_csv_path, output_dir)
+        self._load_onset_results(input_csv_path, output_dir, element_source_map or {})
 
-    def _load_onset_results(self, input_csv_path: str, output_dir: str) -> None:
+    def _load_onset_results(
+        self,
+        input_csv_path: str,
+        output_dir: str,
+        element_source_map: dict[str, str] | None = None,
+    ) -> None:
         """Find the onset CSV in *output_dir*, parse it, and create per-element onset tabs."""
+        if element_source_map is None:
+            element_source_map = {}
         output_path = Path(output_dir)
 
         # Search for a CSV file in the output directory that has the expected onset columns
@@ -442,6 +451,7 @@ class AnalysisPresenter:
                 sup=sup,
                 inf=inf,
                 onset_timesteps=onset_timesteps,
+                source_label=element_source_map.get(str(element_id), ""),
             )
             tab_view.add_raw_tab(widget, f"Onset: {element_id}")
             count += 1
@@ -548,34 +558,61 @@ class AnalysisPresenter:
                     source_headers=[("left", own_rosette), ("right", paired_rosette)],
                 ))
 
-        # ── Individual groups (no rosette, old behaviour) ─────────────────
-        individual_canonicals = [
-            c for c in sensor_pairs if not rosette_data.get(c)
-        ]
-        source_headers_all = [(s.source_id, s.display_name) for s in all_sources]
+        # ── Individual sensor groups (per-source pairs) ───────────────────
+        # Identify canonical pairs from the sensor_pair column.
+        # Supports both cross-reference (A.pair = B, B.pair = A) and
+        # shared-ID patterns (A.pair = "EL_01", B.pair = "EL_01").
+        individual_canonicals = [c for c in sensor_pairs if not rosette_data.get(c)]
+        ind_canonical_set = set(individual_canonicals)
+        already_paired: set[str] = set()
+        individual_pairs: list[tuple[str, str]] = []
 
-        for canonical in individual_canonicals:
-            src_infos: list[SourceInfo] = []
+        for own_can in individual_canonicals:
+            if own_can in already_paired:
+                continue
+            pair_val = sensor_pairs.get(own_can, "")
+            if not pair_val or pair_val == own_can:
+                continue  # self-referential — no usable pair
+
+            if pair_val in ind_canonical_set:
+                # pair_val is itself a canonical → direct cross-reference
+                paired_can = pair_val
+            else:
+                # pair_val is a shared group ID; find another canonical with the same value
+                partners = [
+                    c for c in individual_canonicals
+                    if c != own_can and sensor_pairs.get(c) == pair_val
+                    and c not in already_paired
+                ]
+                if not partners:
+                    continue
+                paired_can = partners[0]
+
+            individual_pairs.append((own_can, paired_can))
+            already_paired.add(own_can)
+            already_paired.add(paired_can)
+
+        for own_can, paired_can in individual_pairs:
             for src in all_sources:
-                name, data = self._sensor_in_source(canonical, src)
-                src_infos.append(SourceInfo(
-                    source_id=src.source_id,
-                    display_name=src.display_name,
-                    sensor_name=name,
-                    data=data,
+                own_name, own_data = self._sensor_in_source(own_can, src)
+                paired_name, paired_data = self._sensor_in_source(paired_can, src)
+                groups.append(BucklingGroup(
+                    pair_id=f"{own_can} → {paired_can}",
+                    is_rosette=False,
+                    rosette_id="",
+                    source_label=src.display_name,
+                    sensors=[SensorEntry(
+                        canonical=own_can,
+                        default_cor="e11",
+                        sources=[
+                            SourceInfo(source_id=src.source_id, display_name=own_can,
+                                       sensor_name=own_name, data=own_data),
+                            SourceInfo(source_id=src.source_id, display_name=paired_can,
+                                       sensor_name=paired_name, data=paired_data),
+                        ],
+                    )],
+                    source_headers=[(own_can, own_can), (paired_can, paired_can)],
                 ))
-            groups.append(BucklingGroup(
-                pair_id=canonical,
-                is_rosette=False,
-                rosette_id="",
-                source_label="",
-                sensors=[SensorEntry(
-                    canonical=canonical,
-                    default_cor="e11",
-                    sources=src_infos,
-                )],
-                source_headers=source_headers_all,
-            ))
 
         log.info(
             "Built %d buckling group(s) (%d rosette×source, %d individual).",

@@ -177,7 +177,7 @@ class BucklingGroupWidget(QFrame):
             if g.source_label:
                 title += f"   [{g.source_label}]"
             return title
-        # Individual: "SensorA_name  Mapping: SensorB_name"
+        # Individual: "SensorA_name  Mapping: SensorB_name   [source.csv]"
         if g.sensors:
             names = [
                 si.sensor_name
@@ -185,10 +185,16 @@ class BucklingGroupWidget(QFrame):
                 if si.sensor_name and si.sensor_name != "—"
             ]
             if len(names) >= 2:
-                return f"{names[0]}   Mapping: {names[1]}"
-            if names:
-                return names[0]
-        return g.pair_id
+                title = f"{names[0]}   Mapping: {names[1]}"
+            elif names:
+                title = names[0]
+            else:
+                title = g.pair_id
+        else:
+            title = g.pair_id
+        if g.source_label:
+            title += f"   [{g.source_label}]"
+        return title
 
     def _build_body(self) -> None:
         grid = QGridLayout(self._body)
@@ -285,6 +291,7 @@ class BucklingGroupWidget(QFrame):
             "pair_id": self._group.pair_id,
             "is_rosette": self._group.is_rosette,
             "rosette_id": self._group.rosette_id,
+            "source_label": self._group.source_label,
             "sensors": rows,
         }
 

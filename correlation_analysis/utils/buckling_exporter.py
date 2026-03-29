@@ -49,22 +49,20 @@ _COR_TYPES = ["e11", "e22", "e12"]
 def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     """Convert checked-group selections to the buckling analysis CSV format.
 
-    SUP columns are populated from **data source A** (the first loaded source)
-    and INF columns from **data source B** (the second loaded source).
+    Both rosette and individual-sensor groups now share the same per-source
+    structure produced by ``_build_buckling_groups``:
 
-    For rosette groups, ``_build_buckling_groups`` creates one entry per
-    rosette×source so that the dialog can show per-source sparklines.  At
-    CSV-generation time all entries sharing the same ``rosette_id`` are
-    combined into one element with a single union time axis:
+    * ``sources[0]`` of each SensorEntry  → SUP (own sensor in that source).
+    * ``sources[1]`` of each SensorEntry  → INF (paired sensor in that source).
+    * Both sides come from the **same** source file — no cross-source mixing.
+    * The time axis is the union of the own and paired sensors' time steps
+      within that source; values at time points present in only one sensor
+      are linearly interpolated from that sensor's data.
 
-    * SUP series ← own-rosette sensor from the **first** source group (A).
-    * INF series ← own-rosette sensor from the **second** source group (B).
-    * Values at time points that exist in a source are written as-is.
-    * Values at time points that exist only in the other source are linearly
-      interpolated from that side's data — no cross-source mixing or averaging.
-
-    For individual (non-rosette) groups the original behaviour is preserved:
-    ``sources[0]`` → SUP (source A), ``sources[1]`` → INF (source B).
+    If the same logical ElementID (rosette ID or canonical name) would appear
+    more than once in the output (because multiple sources contain the same
+    element), a ``_N`` suffix is appended to each occurrence so the
+    fembuckling tool sees distinct elements.
 
     Parameters
     ----------
@@ -75,23 +73,15 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame with columns ``LoadCase, ElementID, Time,
-    SUP_e11, SUP_e22, SUP_e12, INF_e11, INF_e22, INF_e12``.
+    tuple of:
+      * pd.DataFrame with columns ``LoadCase, ElementID, Time,
+        SUP_e11, SUP_e22, SUP_e12, INF_e11, INF_e22, INF_e12``.
+      * dict mapping each final ElementID to the source display-name it
+        was built from (empty string when only one source is present).
     """
     rows: list[dict] = []
-
-    # ── Bucket rosette groups by rosette_id ──────────────────────────────
-    # _build_buckling_groups creates one BucklingGroup per rosette×source so
-    # the dialog can show per-source sparklines.  Here we re-group them so
-    # that each unique rosette emits exactly one block of CSV rows.
-    # Bucket order preserves source-import order: bucket[0] = source A, etc.
-    rosette_buckets: dict[str, list[dict]] = {}
-    non_rosette_groups: list[dict] = []
-    for group in selections:
-        if group.get("is_rosette") and group.get("rosette_id"):
-            rosette_buckets.setdefault(group["rosette_id"], []).append(group)
-        else:
-            non_rosette_groups.append(group)
+    # Maps each final ElementID to the display name of the source it was built from.
+    element_source_map: dict[str, str] = {}
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -108,11 +98,11 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     def _interp_onto(
         series: pd.Series | None, sorted_times: list[float]
     ) -> dict[float, float]:
-        """Interpolate *series* onto *sorted_times*.
+        """Return {time: value} for *series* interpolated onto *sorted_times*.
 
-        Existing data points are returned unchanged.  Time points that fall
-        between existing points are linearly interpolated.  Time points outside
-        the series range produce NaN (no extrapolation).
+        Values at time points that already exist in the series are returned
+        unchanged.  Values at intermediate time points are linearly
+        interpolated.  Time points outside the series range return NaN.
         """
         if series is None:
             return {}
@@ -162,21 +152,46 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
                 row[f"INF_{cor}"] = inf_lookup[cor].get(t, missing_fill)
             rows.append(row)
 
-    # ── Non-rosette (individual sensor) groups ───────────────────────────
-    # sources[0] = source A → SUP, sources[1] = source B → INF.
-    # Each individual canonical has a single BucklingGroup containing all
-    # sources in its sources list, so no bucketing is needed here.
-    for group in non_rosette_groups:
+    # ── Determine raw ElementID for each group ────────────────────────────
+    # Rosette groups use the rosette_id; individual groups use the canonical
+    # name of the first (own) sensor so that the ID is stable across sources.
+
+    def _raw_element_id(group: dict) -> str:
+        if group.get("is_rosette") and group.get("rosette_id"):
+            return group["rosette_id"]
+        if group.get("sensors"):
+            return group["sensors"][0].get("canonical", "") or group["pair_id"]
+        return group["pair_id"]
+
+    # ── Count occurrences to decide when _N suffixes are needed ──────────
+    raw_ids = [_raw_element_id(g) for g in selections]
+    id_counts: dict[str, int] = {}
+    for rid in raw_ids:
+        id_counts[rid] = id_counts.get(rid, 0) + 1
+    id_next_idx: dict[str, int] = {}
+
+    # ── Process each group ────────────────────────────────────────────────
+    # All groups (rosette and individual) now share the same structure:
+    # sources[0] → own (SUP), sources[1] → paired (INF), both same source.
+    for group in selections:
+        raw_id = _raw_element_id(group)
+        if id_counts[raw_id] > 1:
+            id_next_idx[raw_id] = id_next_idx.get(raw_id, 0) + 1
+            element_id = f"{raw_id}_{id_next_idx[raw_id]}"
+        else:
+            element_id = raw_id
+
+        is_rosette = group.get("is_rosette", False)
+        source_label = group.get("source_label", "")
+        element_source_map[element_id] = source_label
+
         cor_sup: dict[str, pd.Series | None] = {}
         cor_inf: dict[str, pd.Series | None] = {}
-        first_sup_entry: dict = {}
 
         for sensor in group["sensors"]:
             cor = sensor["cor"]
             sources_list: list[dict] = sensor.get("sources", [])
             if len(sources_list) > 0:
-                if not first_sup_entry:
-                    first_sup_entry = sources_list[0]
                 s = _fetch(sources_list[0])
                 if s is not None:
                     cor_sup[cor] = s
@@ -185,55 +200,10 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
                 if s is not None:
                     cor_inf[cor] = s
 
-        name = first_sup_entry.get("sensor_name", "")
-        element_id = name if name and name != "—" else group["pair_id"]
-        _emit_element_rows(element_id, False, cor_sup, cor_inf)
+        _emit_element_rows(element_id, is_rosette, cor_sup, cor_inf)
 
-    # ── Rosette groups: source A → SUP, source B → INF ───────────────────
-    # bucket[0] = group from source A (SUP), bucket[1] = group from source B (INF).
-    # Within each per-source group, sources[0] is the own-rosette sensor.
-    # The two sides are kept strictly separate — no cross-source mixing.
-    # The union time axis covers all time steps from both sources; each side
-    # is independently interpolated onto it so existing values are unchanged.
-    for rosette_id, bucket in rosette_buckets.items():
-        cor_sup = {}
-        cor_inf = {}
-
-        if len(bucket) >= 2:
-            # Two or more sources: source A (bucket[0]) → SUP, source B (bucket[1]) → INF.
-            for sensor in bucket[0]["sensors"]:
-                cor = sensor["cor"]
-                sources_list = sensor.get("sources", [])
-                if sources_list:
-                    s = _fetch(sources_list[0])
-                    if s is not None:
-                        cor_sup[cor] = s
-            for sensor in bucket[1]["sensors"]:
-                cor = sensor["cor"]
-                sources_list = sensor.get("sources", [])
-                if sources_list:
-                    s = _fetch(sources_list[0])
-                    if s is not None:
-                        cor_inf[cor] = s
-        else:
-            # Single source: own rosette (sources[0]) → SUP, paired rosette (sources[1]) → INF.
-            for sensor in bucket[0]["sensors"]:
-                cor = sensor["cor"]
-                sources_list = sensor.get("sources", [])
-                if len(sources_list) > 0:
-                    s = _fetch(sources_list[0])
-                    if s is not None:
-                        cor_sup[cor] = s
-                if len(sources_list) > 1:
-                    s = _fetch(sources_list[1])
-                    if s is not None:
-                        cor_inf[cor] = s
-
-        _emit_element_rows(rosette_id, True, cor_sup, cor_inf)
-
-    if rows:
-        return pd.DataFrame(rows, columns=_CSV_COLUMNS)
-    return pd.DataFrame(columns=_CSV_COLUMNS)
+    df = pd.DataFrame(rows, columns=_CSV_COLUMNS) if rows else pd.DataFrame(columns=_CSV_COLUMNS)
+    return df, element_source_map
 
 
 # ------------------------------------------------------------------ #
@@ -276,15 +246,16 @@ def write_export(
     selections: list[dict],
     data_model: DataModel,
     settings: BucklingExportSettings,
-) -> tuple[str, str]:
+) -> tuple[str, str, dict[str, str]]:
     """Generate and write both the CSV and YAML files.
 
     Returns
     -------
-    (csv_path, yaml_path) absolute paths of the written files.
+    (csv_path, yaml_path, element_source_map) where *element_source_map* maps
+    each ElementID written to the CSV to the source display-name it came from.
     """
     # CSV
-    df = generate_csv(selections, data_model)
+    df, element_source_map = generate_csv(selections, data_model)
     csv_path = Path(settings.csv_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(csv_path, index=False)
@@ -293,4 +264,4 @@ def write_export(
     yaml_path = csv_path.with_suffix(".yaml")
     yaml_path.write_text(generate_yaml(settings), encoding="utf-8")
 
-    return str(csv_path), str(yaml_path)
+    return str(csv_path), str(yaml_path), element_source_map
