@@ -353,11 +353,20 @@ class AnalysisPresenter:
         log.info("Buckling onset script finished with exit code 0.")
         self._load_onset_results(input_csv_path, output_dir, element_source_map or {})
 
+    @staticmethod
+    def _undot(s: str) -> str:
+        """Reverse the per-character dot-insertion that fembuckling applies to element IDs.
+
+        fembuckling encodes ``Sensor_123`` as ``S.e.n.s.o.r._.1.2.3`` in its
+        output CSV.  Removing all dots recovers the original ID.
+        """
+        return s.replace(".", "")
+
     def _load_onset_results(
         self,
         input_csv_path: str,
         output_dir: str,
-        element_source_map: dict[str, str] | None = None,
+        element_source_map: dict[str, dict] | None = None,
     ) -> None:
         """Find the onset CSV in *output_dir*, parse it, and create per-element onset tabs."""
         if element_source_map is None:
@@ -418,16 +427,35 @@ class AnalysisPresenter:
         tab_view = self._view.get_tab_view()
         count = 0
 
-        for element_id, onset_rows in onset_df.groupby("element_id"):
-            elem_data = input_df[input_df[elem_id_col].astype(str) == str(element_id)]
+        # Build a reverse lookup so that fembuckling's dot-encoded element IDs
+        # (e.g. "S.e.n.s.o.r._.1.2.3" for "Sensor_123") can be resolved back
+        # to the original element ID that was written to the input CSV.
+        undot_to_original: dict[str, str] = {}
+        for orig in element_source_map:
+            undot_to_original[orig] = orig                       # exact match
+            undot_to_original[self._undot(orig)] = orig          # dot-decoded match
+
+        for element_id_raw, onset_rows in onset_df.groupby("element_id"):
+            raw_str = str(element_id_raw)
+            # Resolve dotted form → original element ID
+            original_id = (
+                undot_to_original.get(raw_str)
+                or undot_to_original.get(self._undot(raw_str))
+                or raw_str
+            )
+
+            elem_data = input_df[input_df[elem_id_col].astype(str) == original_id]
             if elem_data.empty:
-                log.warning("No input data rows found for element_id '%s'.", element_id)
+                log.warning(
+                    "No input data rows found for element_id '%s' (raw: '%s').",
+                    original_id, raw_str,
+                )
                 continue
 
             # Sort by time to ensure correct line plots
             time_col = next((c for c in elem_data.columns if c.lower() == "time"), None)
             if time_col is None:
-                log.warning("No 'Time' column in input CSV for element '%s'.", element_id)
+                log.warning("No 'Time' column in input CSV for element '%s'.", original_id)
                 continue
             elem_data = elem_data.sort_values(time_col)
             time = elem_data[time_col].values.astype(float)
@@ -444,16 +472,28 @@ class AnalysisPresenter:
 
             onset_timesteps = onset_rows["timestep"].tolist()
 
+            # Resolve display name: use source-specific sensor names when available
+            elem_info = element_source_map.get(original_id, {})
+            if isinstance(elem_info, dict):
+                source_label = elem_info.get("source_label", "")
+                sensor_names: list[str] = elem_info.get("sensor_names", [])
+            else:
+                # Legacy plain-string fallback
+                source_label = str(elem_info)
+                sensor_names = []
+
+            display_id = sensor_names[0] if sensor_names else original_id
+
             from ..views.buckling_onset_widget import BucklingOnsetWidget
             widget = BucklingOnsetWidget(
-                element_id=str(element_id),
+                element_id=display_id,
                 time=time,
                 sup=sup,
                 inf=inf,
                 onset_timesteps=onset_timesteps,
-                source_label=element_source_map.get(str(element_id), ""),
+                source_label=source_label,
             )
-            tab_view.add_raw_tab(widget, f"Onset: {element_id}")
+            tab_view.add_raw_tab(widget, f"Onset: {display_id}")
             count += 1
 
         if count == 0:

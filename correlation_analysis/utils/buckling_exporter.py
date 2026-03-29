@@ -76,12 +76,15 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
     tuple of:
       * pd.DataFrame with columns ``LoadCase, ElementID, Time,
         SUP_e11, SUP_e22, SUP_e12, INF_e11, INF_e22, INF_e12``.
-      * dict mapping each final ElementID to the source display-name it
-        was built from (empty string when only one source is present).
+      * dict mapping each final ElementID to
+        ``{"source_label": str, "sensor_names": list[str]}`` where
+        *sensor_names* holds the actual SUP sensor names from the source.
     """
     rows: list[dict] = []
-    # Maps each final ElementID to the display name of the source it was built from.
-    element_source_map: dict[str, str] = {}
+    # Maps each final ElementID to source info:
+    #   {"source_label": str, "sensor_names": list[str]}
+    # where sensor_names contains the actual per-source sensor names used for SUP.
+    element_source_map: dict[str, dict] = {}
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -183,7 +186,7 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
 
         is_rosette = group.get("is_rosette", False)
         source_label = group.get("source_label", "")
-        element_source_map[element_id] = source_label
+        element_source_map[element_id] = {"source_label": source_label, "sensor_names": []}
 
         cor_sup: dict[str, pd.Series | None] = {}
         cor_inf: dict[str, pd.Series | None] = {}
@@ -192,6 +195,9 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
             cor = sensor["cor"]
             sources_list: list[dict] = sensor.get("sources", [])
             if len(sources_list) > 0:
+                sname = sources_list[0].get("sensor_name", "")
+                if sname and sname != "—":
+                    element_source_map[element_id]["sensor_names"].append(sname)
                 s = _fetch(sources_list[0])
                 if s is not None:
                     cor_sup[cor] = s
