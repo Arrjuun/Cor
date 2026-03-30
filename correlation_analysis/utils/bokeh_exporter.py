@@ -10,7 +10,9 @@ try:
     from bokeh.embed import file_html
     from bokeh.layouts import column, gridplot
     from bokeh.models import (
+        Button,
         ColumnDataSource,
+        CustomJS,
         DataTable,
         Div,
         HoverTool,
@@ -20,6 +22,7 @@ try:
         TableColumn,
         TabPanel,
         Tabs,
+        TextInput,
     )
     from bokeh.plotting import figure
     from bokeh.resources import CDN
@@ -72,9 +75,9 @@ class BokehExporter:
 
         Layout (top → bottom):
             [Data Tables heading]
-            [Tabs — one tab per source]
+            [Tabs — one tab per source, each with copy-selected button]
             [Analysis Graphs heading]
-            [Tabs — one tab per analysis tab, each containing stacked figures]
+            [Tabs — all graph/buckling tabs in display order, each with series filter]
         """
         if not BOKEH_AVAILABLE:
             raise RuntimeError("Bokeh is not installed. Run: pip install bokeh")
@@ -89,94 +92,90 @@ class BokehExporter:
                     sizing_mode="stretch_width")
             )
             source_panels = [
-                TabPanel(child=self._make_data_table(src["df"]), title=src["name"])
+                TabPanel(child=self._make_data_table_with_copy(src["df"]), title=src["name"])
                 for src in sources
             ]
             page_children.append(
                 Tabs(tabs=source_panels, sizing_mode="stretch_width")
             )
 
-        # ---- Analysis Graphs section ----
-        analysis_panels = []
-        for tab_data in export_data.get("tabs", []):
-            tab_name = tab_data.get("name", "Analysis")
+        # ---- All graph tabs in display order ----
+        all_panels = []
+        for tab_data in export_data.get("all_tabs", []):
+            tab_name = tab_data.get("name", "Tab")
+            tab_type = tab_data.get("type", "analysis")
             num_cols = max(1, int(tab_data.get("num_columns", 1)))
-            figures = []
 
-            for ls_data in tab_data.get("loadstep_graphs", []):
-                series = ls_data.get("series", [])
-                figures.append(
-                    self._make_loadstep_figure(
-                        series, ls_data.get("title", "LoadStep Graph")
+            figures: list = []
+            all_labeled_renderers: list[tuple[str, object]] = []  # (label, renderer)
+
+            if tab_type == "buckling":
+                figs, label_renderers = self._make_buckling_figures(tab_data.get("onset", {}))
+                figures.extend(figs)
+                all_labeled_renderers.extend(label_renderers)
+            else:
+                for ls_data in tab_data.get("loadstep_graphs", []):
+                    fig, lr = self._make_loadstep_figure(
+                        ls_data.get("series", []),
+                        ls_data.get("title", "LoadStep Graph"),
                     )
+                    figures.append(fig)
+                    all_labeled_renderers.extend(lr)
+
+                for rg_data in tab_data.get("ratio_graphs", []):
+                    if rg_data and rg_data.get("sensors"):
+                        figures.append(self._make_ratio_figure(rg_data))
+                    else:
+                        figures.append(
+                            figure(title="Ratio Graph — No Data", width=900, height=400,
+                                   sizing_mode="stretch_width")
+                        )
+
+            if not figures:
+                continue
+
+            # Arrange figures into rows of num_cols
+            rows = []
+            for i in range(0, len(figures), num_cols):
+                row = figures[i:i + num_cols]
+                while len(row) < num_cols:
+                    row.append(None)
+                rows.append(row)
+            grid = gridplot(rows, sizing_mode="stretch_width", merge_tools=False)
+
+            # Build a series filter input if there are labeled renderers
+            panel_children: list = []
+            if all_labeled_renderers:
+                renderers_js = [r for _, r in all_labeled_renderers]
+                labels_js = [lbl for lbl, _ in all_labeled_renderers]
+                filter_input = TextInput(
+                    placeholder="Filter series by name…",
+                    width=320,
+                    styles={"margin-bottom": "6px"},
                 )
+                filter_cb = CustomJS(
+                    args=dict(renderers=renderers_js, labels=labels_js),
+                    code="""
+                        const val = cb_obj.value.toLowerCase().trim();
+                        for (let i = 0; i < renderers.length; i++) {
+                            renderers[i].visible = (val === '' || labels[i].toLowerCase().includes(val));
+                        }
+                    """,
+                )
+                filter_input.js_on_change("value", filter_cb)
+                panel_children.append(filter_input)
 
-            for rg_data in tab_data.get("ratio_graphs", []):
-                if rg_data and rg_data.get("sensors"):
-                    figures.append(self._make_ratio_figure(rg_data))
-                else:
-                    figures.append(
-                        figure(title="Ratio Graph — No Data", width=900, height=400,
-                               sizing_mode="stretch_width")
-                    )
+            panel_children.append(grid)
+            panel_layout = column(*panel_children, sizing_mode="stretch_width")
+            all_panels.append(TabPanel(child=panel_layout, title=tab_name))
 
-            if figures:
-                # Arrange into rows of num_cols
-                rows = []
-                for i in range(0, len(figures), num_cols):
-                    row = figures[i:i + num_cols]
-                    # Pad last row with None so gridplot keeps column widths uniform
-                    while len(row) < num_cols:
-                        row.append(None)
-                    rows.append(row)
-                grid = gridplot(rows, sizing_mode="stretch_width", merge_tools=False)
-                analysis_panels.append(TabPanel(child=grid, title=tab_name))
-
-        if analysis_panels:
+        if all_panels:
             page_children.append(
                 Div(text='<p class="section-heading">Analysis Graphs</p>',
                     sizing_mode="stretch_width")
             )
             page_children.append(
-                Tabs(tabs=analysis_panels, sizing_mode="stretch_width")
-            )
-
-        # ---- Buckling Onset section ----
-        buckling_panels = []
-        for b_data in export_data.get("buckling_tabs", []):
-            tab_name = b_data.get("name", "Buckling")
-            onset_cfg = b_data.get("onset", {})
-            figures = self._make_buckling_figures(onset_cfg)
-
-            # Append any extra loadstep/ratio graphs added to this buckling tab
-            for ls_data in b_data.get("extra_loadstep_graphs", []):
-                figures.append(
-                    self._make_loadstep_figure(
-                        ls_data.get("series", []),
-                        ls_data.get("title", "LoadStep Graph"),
-                    )
-                )
-            for rg_data in b_data.get("extra_ratio_graphs", []):
-                if rg_data and rg_data.get("sensors"):
-                    figures.append(self._make_ratio_figure(rg_data))
-
-            if figures:
-                grid = gridplot(
-                    [[f] for f in figures],
-                    sizing_mode="stretch_width",
-                    merge_tools=False,
-                )
-                buckling_panels.append(TabPanel(child=grid, title=tab_name))
-
-        if buckling_panels:
-            page_children.append(
-                Div(
-                    text='<p class="section-heading">Buckling Onset</p>',
-                    sizing_mode="stretch_width",
-                )
-            )
-            page_children.append(
-                Tabs(tabs=buckling_panels, sizing_mode="stretch_width")
+                Tabs(tabs=all_panels, sizing_mode="stretch_width")
             )
 
         if not page_children:
@@ -195,8 +194,8 @@ class BokehExporter:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _make_data_table(df: "pd.DataFrame") -> "DataTable":
-        """Build a Bokeh DataTable from a pandas DataFrame (rows = sensors)."""
+    def _make_data_table_with_copy(df: "pd.DataFrame") -> "column":
+        """Build a Bokeh DataTable with a Copy Selected button from a pandas DataFrame."""
         data: dict[str, list] = {"sensor": [str(s) for s in df.index]}
         col_names = []
         for col in df.columns:
@@ -212,7 +211,7 @@ class BokehExporter:
         for field, title in col_names:
             columns.append(TableColumn(field=field, title=title, width=90))
 
-        return DataTable(
+        table = DataTable(
             source=source,
             columns=columns,
             width=1100,
@@ -221,9 +220,41 @@ class BokehExporter:
             sizing_mode="stretch_width",
         )
 
+        copy_btn = Button(label="Copy Selected Rows", button_type="default", width=180)
+        copy_cb = CustomJS(
+            args=dict(source=source),
+            code=r"""
+                const indices = source.selected.indices;
+                if (indices.length === 0) { alert('Select rows first.'); return; }
+                const data = source.data;
+                const cols = Object.keys(data);
+                let text = cols.join('\t') + '\n';
+                for (const i of indices) {
+                    text += cols.map(c => (data[c][i] != null ? data[c][i] : '')).join('\t') + '\n';
+                }
+                navigator.clipboard.writeText(text).catch(() => {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                });
+            """,
+        )
+        copy_btn.js_on_click(copy_cb)
+
+        return column(copy_btn, table, sizing_mode="stretch_width")
+
     @staticmethod
-    def _make_loadstep_figure(series_list: list[dict], title: str) -> "figure":
-        """Build a Bokeh LoadStep vs Strain figure from a list of series dicts."""
+    def _make_loadstep_figure(
+        series_list: list[dict], title: str
+    ) -> "tuple[figure, list[tuple[str, object]]]":
+        """Build a Bokeh LoadStep vs Strain figure.
+
+        Returns ``(figure, [(label, renderer), ...])`` so callers can wire up
+        a series-filter TextInput across all figures in a tab.
+        """
         p = figure(
             title=title,
             x_axis_label="Load Step",
@@ -241,6 +272,7 @@ class BokehExporter:
         p.add_tools(hover)
 
         legend_items = []
+        labeled_renderers: list[tuple[str, object]] = []
         for series in series_list:
             style_dict = series.get("style", {})
             color = style_dict.get("color", "#1565C0")
@@ -265,14 +297,16 @@ class BokehExporter:
                 line_dash=dash,
                 visible=visible,
             )
+            labeled_renderers.append((label, line))
 
             if marker:
                 scatter_fn = getattr(p, marker, None)
                 if scatter_fn:
-                    scatter_fn(
+                    sc = scatter_fn(
                         "x", "y", source=src,
                         color=color, size=8, visible=visible,
                     )
+                    labeled_renderers.append((label, sc))
 
             legend_items.append(LegendItem(label=label, renderers=[line]))
 
@@ -280,7 +314,7 @@ class BokehExporter:
             legend = Legend(items=legend_items, click_policy="hide")
             p.add_layout(legend, "right")
 
-        return p
+        return p, labeled_renderers
 
     @staticmethod
     def _make_ratio_figure(ratio_data: dict) -> "figure":
@@ -353,9 +387,14 @@ class BokehExporter:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _make_buckling_figures(cfg: dict) -> list:
+    def _make_buckling_figures(
+        cfg: dict,
+    ) -> "tuple[list, list[tuple[str, object]]]":
         """Build four Bokeh figures (SUP, INF, Membrane, Bending) from a
-        ``BucklingOnsetWidget.to_config()`` dict."""
+        ``BucklingOnsetWidget.to_config()`` dict.
+
+        Returns ``([figures], [(label, renderer), ...])`` for filter wiring.
+        """
         element_id = cfg.get("element_id", "")
         source_label = cfg.get("source_label", "")
         onset_timesteps = cfg.get("onset_timesteps", [])
@@ -376,6 +415,7 @@ class BokehExporter:
         ]
 
         figures_out = []
+        labeled_renderers: list[tuple[str, object]] = []
         for plot_key, y_label, mode in plot_specs:
             title = f"{plot_key} Strain — Element {element_id}{src_tag}"
             p = figure(
@@ -423,8 +463,10 @@ class BokehExporter:
                     "comp": [comp] * len(time),
                 })
                 line = p.line("x", "y", source=src, line_color=color, line_width=2)
-                p.scatter("x", "y", source=src, color=color, size=6)
+                sc = p.scatter("x", "y", source=src, color=color, size=6)
                 legend_items.append(LegendItem(label=comp, renderers=[line]))
+                labeled_renderers.append((comp, line))
+                labeled_renderers.append((comp, sc))
 
             # Dummy line for onset legend entry (Span does not support legend_label)
             if onset_timesteps:
@@ -451,7 +493,7 @@ class BokehExporter:
 
             figures_out.append(p)
 
-        return figures_out
+        return figures_out, labeled_renderers
 
     # ------------------------------------------------------------------ #
     # Legacy export (kept for backwards compatibility)                     #
@@ -469,7 +511,7 @@ class BokehExporter:
 
         tab_panels = []
         for tab_id, series_list in tabs_data.items():
-            fig = self._make_loadstep_figure(series_list, tab_id)
+            fig, _ = self._make_loadstep_figure(series_list, tab_id)
             tab_panels.append(TabPanel(child=fig, title=tab_id))
 
         if not tab_panels:

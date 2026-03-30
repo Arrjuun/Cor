@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from ..utils.bokeh_exporter import BokehExporter
 from ..utils.csv_exporter import export_csv as _export_csv_util
+from ..views.tab_graph_view import BucklingTabContent, GraphTabContent
 
 if TYPE_CHECKING:
     from ..views.main_window import MainWindow
@@ -42,83 +43,51 @@ class ExportPresenter:
                     "df": ds.df,
                 })
 
-            # ---- Collect regular analysis tabs ----
-            tabs = []
-            for tab_content in tab_view.all_tabs():
-                tab_name = tab_view.get_tab_name(tab_content.tab_id)
-
-                # LoadStep graphs
-                loadstep_graphs = []
-                for graph in tab_content.get_loadstep_graphs():
-                    series_list = []
-                    for key in graph.series_keys():
-                        info = graph.get_series_info(key)
-                        if info:
-                            series_list.append({
-                                "sensor_name": info["sensor_name"],
-                                "source_id": info["source_id"],
-                                "x": info["x"].tolist(),
-                                "y": info["y"].tolist(),
-                                "style": info["style"].to_dict(),
-                            })
-                    loadstep_graphs.append({
-                        "title": graph.get_title(),
-                        "series": series_list,
+            # ---- Collect all tabs in display order ----
+            all_tabs_data = []
+            for widget, tab_name in tab_view.all_tabs_ordered():
+                if isinstance(widget, BucklingTabContent):
+                    onset_cfg = widget.get_onset_widget().to_config()
+                    all_tabs_data.append({
+                        "type": "buckling",
+                        "name": tab_name,
+                        "num_columns": widget._num_columns,
+                        "onset": onset_cfg,
                     })
+                elif isinstance(widget, GraphTabContent):
+                    loadstep_graphs = []
+                    for graph in widget.get_loadstep_graphs():
+                        series_list = []
+                        for key in graph.series_keys():
+                            info = graph.get_series_info(key)
+                            if info:
+                                series_list.append({
+                                    "sensor_name": info["sensor_name"],
+                                    "source_id": info["source_id"],
+                                    "x": info["x"].tolist(),
+                                    "y": info["y"].tolist(),
+                                    "style": info["style"].to_dict(),
+                                })
+                        loadstep_graphs.append({
+                            "title": graph.get_title(),
+                            "series": series_list,
+                        })
 
-                # Ratio graphs
-                ratio_graphs = []
-                for rg in tab_content.get_ratio_graphs():
-                    ratio_graphs.append(rg.get_export_data())
+                    ratio_graphs = []
+                    for rg in widget.get_ratio_graphs():
+                        ratio_graphs.append(rg.get_export_data())
 
-                tabs.append({
-                    "name": tab_name,
-                    "num_columns": tab_content._num_columns,
-                    "loadstep_graphs": loadstep_graphs,
-                    "ratio_graphs": ratio_graphs,
-                })
-
-            # ---- Collect buckling onset tabs ----
-            buckling_tabs = []
-            for b_tab in tab_view.all_buckling_tabs():
-                b_tab_name = tab_view.get_tab_name(b_tab.tab_id)
-                onset_cfg = b_tab.get_onset_widget().to_config()
-
-                # Also collect any extra loadstep/ratio graphs added to this buckling tab
-                extra_loadstep = []
-                for graph in b_tab.get_loadstep_graphs():
-                    series_list = []
-                    for key in graph.series_keys():
-                        info = graph.get_series_info(key)
-                        if info:
-                            series_list.append({
-                                "sensor_name": info["sensor_name"],
-                                "source_id": info["source_id"],
-                                "x": info["x"].tolist(),
-                                "y": info["y"].tolist(),
-                                "style": info["style"].to_dict(),
-                            })
-                    extra_loadstep.append({
-                        "title": graph.get_title(),
-                        "series": series_list,
+                    all_tabs_data.append({
+                        "type": "analysis",
+                        "name": tab_name,
+                        "num_columns": widget._num_columns,
+                        "loadstep_graphs": loadstep_graphs,
+                        "ratio_graphs": ratio_graphs,
                     })
-
-                extra_ratio = []
-                for rg in b_tab.get_ratio_graphs():
-                    extra_ratio.append(rg.get_export_data())
-
-                buckling_tabs.append({
-                    "name": b_tab_name,
-                    "onset": onset_cfg,
-                    "num_columns": b_tab._num_columns,
-                    "extra_loadstep_graphs": extra_loadstep,
-                    "extra_ratio_graphs": extra_ratio,
-                })
 
             export_data = {
                 "sources": sources,
-                "tabs": tabs,
-                "buckling_tabs": buckling_tabs,
+                "all_tabs": all_tabs_data,
             }
 
             exporter = BokehExporter()

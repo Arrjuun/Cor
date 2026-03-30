@@ -68,6 +68,8 @@ class GraphTabContent(QWidget):
         add_ratio.setCheckable(False)
         add_ls.clicked.connect(self.add_loadstep_graph)
         add_ratio.clicked.connect(self.add_ratio_graph)
+        self._add_ls_btn = add_ls
+        self._add_ratio_btn = add_ratio
         btn_layout.addWidget(add_ls)
         btn_layout.addWidget(add_ratio)
         btn_layout.addStretch()
@@ -200,12 +202,15 @@ class BucklingTabContent(GraphTabContent):
         self._onset_widget = onset_widget
         super().__init__(tab_id, parent)
 
-    # Override to insert the onset widget at the top of the scroll container
+    # Override to hide graph-add buttons and place onset widget below the toolbar
     def _build_ui(self) -> None:
         super()._build_ui()
-        # _inner_layout currently has: [0] btn_layout, [1] _graphs_container, [2] stretch
-        # Insert the onset widget at position 0 (above the toolbar)
-        self._inner_layout.insertWidget(0, self._onset_widget)
+        # Hide the + LoadStep / + Ratio buttons — buckling tabs only show onset plots
+        self._add_ls_btn.hide()
+        self._add_ratio_btn.hide()
+        # _inner_layout currently has: [0] btn_layout (columns only), [1] _graphs_container, [2] stretch
+        # Insert the onset widget at position 1 so the columns toolbar stays at the top
+        self._inner_layout.insertWidget(1, self._onset_widget)
 
     def _post_init(self) -> None:
         """Buckling tabs start with no default graphs."""
@@ -366,6 +371,15 @@ class TabGraphView(QWidget):
             if self._tab_widget.widget(i) is content:
                 return self._tab_widget.tabText(i)
         return tab_id
+
+    def all_tabs_ordered(self) -> list[tuple]:
+        """Return (content_widget, tab_name) tuples in display order for all tabs."""
+        result = []
+        for i in range(self._tab_widget.count()):
+            widget = self._tab_widget.widget(i)
+            name = self._tab_widget.tabText(i)
+            result.append((widget, name))
+        return result
 
     def get_all_loadstep_graphs(self) -> list[LoadStepGraphWidget]:
         graphs = []
