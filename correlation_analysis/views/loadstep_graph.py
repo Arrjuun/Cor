@@ -355,15 +355,16 @@ class LoadStepGraphWidget(QWidget):
         upper_y = y * (1 + pct / 100)
         lower_y = y * (1 - pct / 100)
 
-        upper_item = pg.PlotDataItem(x, upper_y, pen=None)
-        lower_item = pg.PlotDataItem(x, lower_y, pen=None)
+        upper_item = pg.PlotDataItem(x, upper_y, pen=pg.mkPen(None))
+        lower_item = pg.PlotDataItem(x, lower_y, pen=pg.mkPen(None))
+
+        # Items must be in the plot before FillBetweenItem connects to their signals
+        self._plot.addItem(upper_item)
+        self._plot.addItem(lower_item)
 
         c = QColor(color)
         c.setAlpha(50)
-        fill_item = pg.FillBetweenItem(upper_item, lower_item, brush=pg.mkBrush(c))
-
-        self._plot.addItem(upper_item)
-        self._plot.addItem(lower_item)
+        fill_item = pg.FillBetweenItem(upper_item.curve, lower_item.curve, brush=pg.mkBrush(c))
         self._plot.addItem(fill_item)
 
         self._bands[band_id] = {
