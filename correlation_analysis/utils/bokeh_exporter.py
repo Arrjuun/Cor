@@ -114,22 +114,36 @@ class BokehExporter:
                 figures.extend(figs)
                 all_labeled_renderers.extend(label_renderers)
             else:
-                for ls_data in tab_data.get("loadstep_graphs", []):
-                    fig, lr = self._make_loadstep_figure(
-                        ls_data.get("series", []),
-                        ls_data.get("title", "LoadStep Graph"),
-                    )
-                    figures.append(fig)
-                    all_labeled_renderers.extend(lr)
+                # Unified ordered graph list (new format)
+                graph_list = tab_data.get("graphs")
+                if graph_list is None:
+                    # Backwards-compat: old format had separate lists — interleave as
+                    # loadstep-first, then ratio (original behaviour)
+                    graph_list = [
+                        {"graph_type": "loadstep", **g}
+                        for g in tab_data.get("loadstep_graphs", [])
+                    ] + [
+                        {"graph_type": "ratio", **(g or {})}
+                        for g in tab_data.get("ratio_graphs", [])
+                    ]
 
-                for rg_data in tab_data.get("ratio_graphs", []):
-                    if rg_data and rg_data.get("sensors"):
-                        figures.append(self._make_ratio_figure(rg_data))
-                    else:
-                        figures.append(
-                            figure(title="Ratio Graph — No Data", width=900, height=400,
-                                   sizing_mode="stretch_width")
+                for g_data in graph_list:
+                    g_type = g_data.get("graph_type", "loadstep")
+                    if g_type == "loadstep":
+                        fig, lr = self._make_loadstep_figure(
+                            g_data.get("series", []),
+                            g_data.get("title", "LoadStep Graph"),
                         )
+                        figures.append(fig)
+                        all_labeled_renderers.extend(lr)
+                    else:  # ratio
+                        if g_data.get("sensors"):
+                            figures.append(self._make_ratio_figure(g_data))
+                        else:
+                            figures.append(
+                                figure(title="Ratio Graph — No Data", width=900, height=400,
+                                       sizing_mode="stretch_width")
+                            )
 
             if not figures:
                 continue
@@ -318,27 +332,51 @@ class BokehExporter:
 
     @staticmethod
     def _make_ratio_figure(ratio_data: dict) -> "figure":
-        """Build a Bokeh scatter figure for a ratio graph."""
+        """Build a Bokeh scatter figure for a ratio graph.
+
+        Respects per-group colours and marker shapes stored in the export data.
+        pyqtgraph symbol codes are mapped to Bokeh marker names.
+        """
+        # pyqtgraph symbol → Bokeh marker name
+        _PG_TO_BOKEH_MARKER = {
+            "o":    "circle",
+            "s":    "square",
+            "t":    "triangle",
+            "d":    "diamond",
+            "+":    "cross",
+            "star": "star",
+        }
+
         sensors = ratio_data["sensors"]
         values_a = ratio_data["values_a"]
         values_b = ratio_data["values_b"]
         label_a = ratio_data.get("label_a", "Source A")
         label_b = ratio_data.get("label_b", "Source B")
+        sensor_groups: list[str] = ratio_data.get("sensor_groups", ["Other"] * len(sensors))
+        groups_info: list[dict] = ratio_data.get("groups_info", [])
+        use_grouping: bool = ratio_data.get("use_grouping", False)
 
-        # Filter valid (non-NaN) entries
-        valid = [
-            (s, float(a), float(b))
-            for s, a, b in zip(sensors, values_a, values_b)
-            if not (np.isnan(float(a)) or np.isnan(float(b)))
-        ]
+        # Build a lookup: group_key → {color, marker}
+        group_style: dict[str, dict] = {}
+        for gi, ginfo in enumerate(groups_info):
+            key = ginfo["key"]
+            color = ginfo.get("color", "#1565C0")
+            pg_sym = ginfo.get("symbol", "o")
+            marker = _PG_TO_BOKEH_MARKER.get(pg_sym, "circle")
+            group_style[key] = {"color": color, "marker": marker, "label": ginfo.get("label", key)}
+
+        # Filter out NaN entries; keep group association
+        valid: list[tuple[str, float, float, str]] = []  # (sensor, a, b, group_key)
+        for s, a, b, g in zip(sensors, values_a, values_b, sensor_groups):
+            try:
+                fa, fb = float(a), float(b)
+                if not (np.isnan(fa) or np.isnan(fb)):
+                    valid.append((s, fa, fb, g))
+            except (TypeError, ValueError):
+                pass
+
         if not valid:
             return figure(title="Ratio Graph — No Valid Data", width=900, height=400)
-
-        xs = [v[1] for v in valid]
-        ys = [v[2] for v in valid]
-        sensor_names = [v[0] for v in valid]
-
-        src = ColumnDataSource({"x": xs, "y": ys, "sensor": sensor_names})
 
         p = figure(
             title=f"Strain Correlation — {label_a} vs {label_b}",
@@ -356,10 +394,51 @@ class BokehExporter:
         ])
         p.add_tools(hover)
 
-        p.scatter("x", "y", source=src, size=10, color="#1565C0", alpha=0.8)
+        if use_grouping:
+            # Group data by key, preserving insertion order from groups_info
+            ordered_keys: list[str] = [g["key"] for g in groups_info]
+            grouped: dict[str, list] = {k: [] for k in ordered_keys}
+            for entry in valid:
+                grouped.setdefault(entry[3], []).append(entry)
+
+            legend_items = []
+            for key in ordered_keys:
+                entries = grouped.get(key, [])
+                if not entries:
+                    continue
+                gstyle = group_style.get(key, {"color": "#1565C0", "marker": "circle", "label": key})
+                color = gstyle["color"]
+                marker = gstyle["marker"]
+                glabel = gstyle["label"]
+
+                src = ColumnDataSource({
+                    "x":      [e[1] for e in entries],
+                    "y":      [e[2] for e in entries],
+                    "sensor": [e[0] for e in entries],
+                })
+                r = p.scatter("x", "y", source=src, size=10,
+                              marker=marker, color=color, alpha=0.8,
+                              legend_label=glabel)
+                legend_items.append(r)
+
+            if p.legend:
+                p.legend.click_policy = "hide"
+                p.legend.location = "top_left"
+        else:
+            # No grouping — single series with the first group's style (or default)
+            default_style = group_style.get(sensor_groups[0], {"color": "#1565C0", "marker": "circle"}) \
+                if sensor_groups else {"color": "#1565C0", "marker": "circle"}
+            src = ColumnDataSource({
+                "x":      [e[1] for e in valid],
+                "y":      [e[2] for e in valid],
+                "sensor": [e[0] for e in valid],
+            })
+            p.scatter("x", "y", source=src, size=10,
+                      marker=default_style["marker"],
+                      color=default_style["color"], alpha=0.8)
 
         # 1:1 reference line
-        all_vals = xs + ys
+        all_vals = [e[1] for e in valid] + [e[2] for e in valid]
         lo, hi = min(all_vals), max(all_vals)
         margin = (hi - lo) * 0.05 or 0.01
         ref_x = [lo - margin, hi + margin]
@@ -373,10 +452,10 @@ class BokehExporter:
             factor_neg = 1.0 - pct / 100.0
             ref_y_pos = [v * factor_pos for v in ref_x]
             ref_y_neg = [v * factor_neg for v in ref_x]
-            label = f"±{pct:.0f}%"
+            band_label = f"±{pct:.0f}%"
             p.line(ref_x, ref_y_pos,
                    line_color="#F57F17", line_dash="dashed", line_width=1,
-                   legend_label=label)
+                   legend_label=band_label)
             p.line(ref_x, ref_y_neg,
                    line_color="#F57F17", line_dash="dashed", line_width=1)
 

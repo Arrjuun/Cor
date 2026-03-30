@@ -8,6 +8,8 @@ from PySide6.QtWidgets import QMessageBox
 from ..utils.bokeh_exporter import BokehExporter
 from ..utils.csv_exporter import export_csv as _export_csv_util
 from ..views.tab_graph_view import BucklingTabContent, GraphTabContent
+from ..views.loadstep_graph import LoadStepGraphWidget
+from ..views.ratio_graph import RatioGraphWidget
 
 if TYPE_CHECKING:
     from ..views.main_window import MainWindow
@@ -55,34 +57,38 @@ class ExportPresenter:
                         "onset": onset_cfg,
                     })
                 elif isinstance(widget, GraphTabContent):
-                    loadstep_graphs = []
-                    for graph in widget.get_loadstep_graphs():
-                        series_list = []
-                        for key in graph.series_keys():
-                            info = graph.get_series_info(key)
-                            if info:
-                                series_list.append({
-                                    "sensor_name": info["sensor_name"],
-                                    "source_id": info["source_id"],
-                                    "x": info["x"].tolist(),
-                                    "y": info["y"].tolist(),
-                                    "style": info["style"].to_dict(),
-                                })
-                        loadstep_graphs.append({
-                            "title": graph.get_title(),
-                            "series": series_list,
-                        })
-
-                    ratio_graphs = []
-                    for rg in widget.get_ratio_graphs():
-                        ratio_graphs.append(rg.get_export_data())
+                    graphs = []
+                    for graph in widget.get_all_graphs():
+                        if isinstance(graph, LoadStepGraphWidget):
+                            series_list = []
+                            for key in graph.series_keys():
+                                info = graph.get_series_info(key)
+                                if info:
+                                    series_list.append({
+                                        "sensor_name": info["sensor_name"],
+                                        "source_id": info["source_id"],
+                                        "x": info["x"].tolist(),
+                                        "y": info["y"].tolist(),
+                                        "style": info["style"].to_dict(),
+                                    })
+                            graphs.append({
+                                "graph_type": "loadstep",
+                                "title": graph.get_title(),
+                                "series": series_list,
+                            })
+                        elif isinstance(graph, RatioGraphWidget):
+                            data = graph.get_export_data()
+                            if data:
+                                data["graph_type"] = "ratio"
+                            else:
+                                data = {"graph_type": "ratio"}
+                            graphs.append(data)
 
                     all_tabs_data.append({
                         "type": "analysis",
                         "name": tab_name,
                         "num_columns": widget._num_columns,
-                        "loadstep_graphs": loadstep_graphs,
-                        "ratio_graphs": ratio_graphs,
+                        "graphs": graphs,
                     })
 
             export_data = {

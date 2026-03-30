@@ -160,6 +160,10 @@ class GraphTabContent(QWidget):
     def get_ratio_graphs(self) -> list[RatioGraphWidget]:
         return list(self._ratio_graphs)
 
+    def get_all_graphs(self) -> list[QWidget]:
+        """Return all graphs in display order (loadstep and ratio interleaved)."""
+        return list(self._all_graphs)
+
     def clear_graphs(self) -> None:
         """Remove all graph widgets from this tab (used before restoring from config)."""
         for g in list(self._all_graphs):

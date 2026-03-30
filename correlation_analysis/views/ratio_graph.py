@@ -800,14 +800,43 @@ class RatioGraphWidget(QWidget):
         """Return current plot data for export, or None if nothing plotted."""
         if not self._sensors:
             return None
+
+        # Build per-sensor group keys (mirrors plot_ratio grouping logic)
+        sensor_groups: list[str] = [
+            _parse_sensor_group(s) or "Other" for s in self._sensors
+        ]
+        named_keys = [k for k in sensor_groups if k != "Other"]
+        use_grouping = len(set(named_keys)) > 0 and len(set(sensor_groups)) > 1
+
+        # Collect ordered unique groups with their human-readable labels and styles
+        seen: set[str] = set()
+        groups_info: list[dict] = []
+        for key in sensor_groups:
+            if key not in seen:
+                seen.add(key)
+                if key and key != "Other":
+                    label = _group_label(key)
+                else:
+                    label = "Other" if key == "Other" else "All Sensors"
+                style = self._group_styles.get(key, {"color": "#1565C0", "symbol": "o"})
+                groups_info.append({
+                    "key":    key,
+                    "label":  label,
+                    "color":  style.get("color", "#1565C0"),
+                    "symbol": style.get("symbol", "o"),
+                })
+
         return {
-            "sensors":   list(self._sensors),
-            "values_a":  list(self._values_a),
-            "values_b":  list(self._values_b),
-            "ratios":    list(self._ratios),
-            "label_a":   getattr(self, "_label_a", "Source A"),
-            "label_b":   getattr(self, "_label_b", "Source B"),
-            "ref_bands": [b["pct"] for b in self._ref_bands],
+            "sensors":      list(self._sensors),
+            "values_a":     list(self._values_a),
+            "values_b":     list(self._values_b),
+            "ratios":       list(self._ratios),
+            "label_a":      getattr(self, "_label_a", "Source A"),
+            "label_b":      getattr(self, "_label_b", "Source B"),
+            "ref_bands":    [b["pct"] for b in self._ref_bands],
+            "sensor_groups": sensor_groups,
+            "groups_info":  groups_info,
+            "use_grouping": use_grouping,
         }
 
     def _remove_selected_points(self) -> None:
