@@ -133,6 +133,7 @@ class BokehExporter:
                         fig, lr = self._make_loadstep_figure(
                             g_data.get("series", []),
                             g_data.get("title", "LoadStep Graph"),
+                            g_data.get("bands", []),
                         )
                         figures.append(fig)
                         all_labeled_renderers.extend(lr)
@@ -262,7 +263,7 @@ class BokehExporter:
 
     @staticmethod
     def _make_loadstep_figure(
-        series_list: list[dict], title: str
+        series_list: list[dict], title: str, bands: "list[dict] | None" = None
     ) -> "tuple[figure, list[tuple[str, object]]]":
         """Build a Bokeh LoadStep vs Strain figure.
 
@@ -287,13 +288,18 @@ class BokehExporter:
 
         legend_items = []
         labeled_renderers: list[tuple[str, object]] = []
+        # Build key → series lookup for error bands
+        series_by_key: dict[str, dict] = {}
+
         for series in series_list:
             style_dict = series.get("style", {})
             color = style_dict.get("color", "#1565C0")
             thickness = style_dict.get("thickness", 2)
             dash = _DASH_MAP.get(style_dict.get("line_style", "Solid"), "solid")
             marker = _MARKER_MAP.get(style_dict.get("marker", "None"))
-            label = style_dict.get("label") or series["sensor_name"]
+            base_label = style_dict.get("label") or series["sensor_name"]
+            formula = style_dict.get("formula", "")
+            label = f"{base_label} [{formula}]" if formula else base_label
             visible = style_dict.get("visible", True)
 
             x = list(series["x"])
@@ -323,6 +329,26 @@ class BokehExporter:
                     labeled_renderers.append((label, sc))
 
             legend_items.append(LegendItem(label=label, renderers=[line]))
+
+            key = f"{series.get('source_id', '')}::{series.get('sensor_name', '')}"
+            series_by_key[key] = {"x": x, "y": y, "color": color}
+
+        # Render error bands (excluded from CSV, included in HTML)
+        for band in (bands or []):
+            key = band["key"]
+            pct = band["pct"]
+            s = series_by_key.get(key)
+            if not s:
+                continue
+            x = s["x"]
+            y = s["y"]
+            color = s["color"]
+            upper = [v * (1 + pct / 100) for v in y]
+            lower = [v * (1 - pct / 100) for v in y]
+            band_src = ColumnDataSource({"x": x, "upper": upper, "lower": lower})
+            p.varea("x", "lower", "upper", source=band_src,
+                    fill_color=color, fill_alpha=0.15,
+                    legend_label=f"±{pct:.4g}%")
 
         if legend_items:
             legend = Legend(items=legend_items, click_policy="hide")

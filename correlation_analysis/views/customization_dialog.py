@@ -45,6 +45,7 @@ class SeriesStyle:
     thickness: int = 1              # 1-10
     visible: bool = True
     label: str = ""
+    formula: str = ""               # formula string for derived rows (shown in legend)
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +55,7 @@ class SeriesStyle:
             "thickness": self.thickness,
             "visible": self.visible,
             "label": self.label,
+            "formula": self.formula,
         }
 
     @classmethod
@@ -65,6 +67,7 @@ class SeriesStyle:
             thickness=data.get("thickness", 2),
             visible=data.get("visible", True),
             label=data.get("label", ""),
+            formula=data.get("formula", ""),
         )
 
     def pen_color(self) -> QColor:

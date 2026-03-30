@@ -7,6 +7,7 @@ from typing import Any, Optional
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QByteArray, QMimeData, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
@@ -65,6 +66,7 @@ class LoadStepGraphWidget(QWidget):
         self.setAcceptDrops(True)
         self._title = title
         self._series: dict[str, dict] = {}
+        self._bands: dict[str, dict] = {}   # band_id → {key, pct, upper_item, lower_item, fill_item}
         self._color_idx = 0
         self._dragging = False
         self._build_ui(title)
@@ -196,6 +198,9 @@ class LoadStepGraphWidget(QWidget):
 
         sym_size = 5 + style.thickness * 2
 
+        display_label = style.label or sensor_name
+        legend_name = f"{display_label} [{style.formula}]" if style.formula else display_label
+
         if key in self._series:
             item = self._series[key]["item"]
             # Use setData with all style kwargs for reliable update
@@ -208,6 +213,13 @@ class LoadStepGraphWidget(QWidget):
                 symbolSize=sym_size,
             )
             item.setVisible(style.visible)
+            # Update legend label (formula may have changed)
+            legend = self._plot.getPlotItem().legend
+            if legend is not None:
+                legend.removeItem(item)
+                legend.addItem(item, legend_name)
+            # Refresh band positions if data changed
+            self._refresh_bands_for_key(key, x, y)
         else:
             item = self._plot.plot(
                 x=x, y=y,
@@ -216,7 +228,7 @@ class LoadStepGraphWidget(QWidget):
                 symbolPen=sym_pen,
                 symbolBrush=sym_brush,
                 symbolSize=sym_size,
-                name=style.label or sensor_name,
+                name=legend_name,
             )
 
         self._series[key] = {
@@ -230,6 +242,9 @@ class LoadStepGraphWidget(QWidget):
         if key in self._series:
             self._plot.removeItem(self._series[key]["item"])
             del self._series[key]
+        # Remove any bands tied to this series
+        for band_id in [bid for bid, b in self._bands.items() if b["key"] == key]:
+            self.remove_error_band(band_id)
         if not self._series:
             self._vline.setVisible(False)
             self._hover_label.setVisible(False)
@@ -253,6 +268,13 @@ class LoadStepGraphWidget(QWidget):
                     lambda _=False, k=key: self.customize_series(k))
                 sm.addAction("Hide" if info["style"].visible else "Show").triggered.connect(
                     lambda _=False, k=key: self._toggle_visibility(k))
+                sm.addAction("Add Error Band…").triggered.connect(
+                    lambda _=False, k=key: self._prompt_add_error_band(k))
+                # List existing bands for this series
+                for band_id, binfo in self._bands.items():
+                    if binfo["key"] == key:
+                        sm.addAction(f"Remove Band ±{binfo['pct']:.4g}%").triggered.connect(
+                            lambda _=False, bid=band_id: self.remove_error_band(bid))
                 sm.addAction("Remove").triggered.connect(
                     lambda _=False, k=key: self.remove_series(k))
             menu.addSeparator()
@@ -281,6 +303,7 @@ class LoadStepGraphWidget(QWidget):
     def clear(self) -> None:
         self._plot.clear()
         self._series.clear()
+        self._bands.clear()
         self._vline.setVisible(False)
         self._hover_label.setVisible(False)
         self._color_idx = 0
@@ -297,7 +320,88 @@ class LoadStepGraphWidget(QWidget):
                  "style": s["style"].to_dict()}
                 for s in self._series.values()
             ],
+            "bands": [
+                {"key": b["key"], "pct": b["pct"]}
+                for b in self._bands.values()
+            ],
         }
+
+    def get_bands(self) -> dict[str, dict]:
+        """Return a copy of the current error bands dict."""
+        return dict(self._bands)
+
+    # ------------------------------------------------------------------ #
+    # Error bands                                                         #
+    # ------------------------------------------------------------------ #
+
+    def add_error_band(self, key: str, pct: float) -> Optional[str]:
+        """Add a ±pct% translucent fill band around the named series.
+
+        Returns the band_id string, or None if *key* is not a known series.
+        """
+        if key not in self._series:
+            return None
+
+        band_id = f"{key}::band::{pct:.4g}"
+        # Replace any existing band at the same percentage
+        if band_id in self._bands:
+            self.remove_error_band(band_id)
+
+        info = self._series[key]
+        x = info["x"]
+        y = info["y"]
+        color = info["style"].color
+
+        upper_y = y * (1 + pct / 100)
+        lower_y = y * (1 - pct / 100)
+
+        upper_item = pg.PlotDataItem(x, upper_y, pen=None)
+        lower_item = pg.PlotDataItem(x, lower_y, pen=None)
+
+        c = QColor(color)
+        c.setAlpha(50)
+        fill_item = pg.FillBetweenItem(upper_item, lower_item, brush=pg.mkBrush(c))
+
+        self._plot.addItem(upper_item)
+        self._plot.addItem(lower_item)
+        self._plot.addItem(fill_item)
+
+        self._bands[band_id] = {
+            "key": key,
+            "pct": pct,
+            "upper_item": upper_item,
+            "lower_item": lower_item,
+            "fill_item": fill_item,
+        }
+        return band_id
+
+    def remove_error_band(self, band_id: str) -> None:
+        """Remove an error band by its ID."""
+        if band_id not in self._bands:
+            return
+        b = self._bands.pop(band_id)
+        self._plot.removeItem(b["fill_item"])
+        self._plot.removeItem(b["upper_item"])
+        self._plot.removeItem(b["lower_item"])
+
+    def _refresh_bands_for_key(self, key: str, x: np.ndarray, y: np.ndarray) -> None:
+        """Recompute band curves when the underlying series data changes."""
+        for b in self._bands.values():
+            if b["key"] != key:
+                continue
+            pct = b["pct"]
+            b["upper_item"].setData(x, y * (1 + pct / 100))
+            b["lower_item"].setData(x, y * (1 - pct / 100))
+
+    def _prompt_add_error_band(self, key: str) -> None:
+        """Ask the user for a percentage and add an error band."""
+        from PySide6.QtWidgets import QInputDialog
+        pct, ok = QInputDialog.getDouble(
+            self, "Add Error Band", "Error band percentage (%):",
+            10.0, 0.1, 100.0, 1,
+        )
+        if ok:
+            self.add_error_band(key, pct)
 
     # ------------------------------------------------------------------ #
     # Drag-and-drop + context menu                                        #

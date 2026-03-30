@@ -71,10 +71,15 @@ class ExportPresenter:
                                         "y": info["y"].tolist(),
                                         "style": info["style"].to_dict(),
                                     })
+                            bands_list = [
+                                {"key": b["key"], "pct": b["pct"]}
+                                for b in graph.get_bands().values()
+                            ]
                             graphs.append({
                                 "graph_type": "loadstep",
                                 "title": graph.get_title(),
                                 "series": series_list,
+                                "bands": bands_list,
                             })
                         elif isinstance(graph, RatioGraphWidget):
                             data = graph.get_export_data()

@@ -103,40 +103,70 @@ def export_csv(
         tab_name = tab_view.get_tab_name(b_tab.tab_id)
         onset_cfg = b_tab.get_onset_widget().to_config()
         element_id = onset_cfg.get("element_id", "")
-        time_vals = onset_cfg.get("time", [])
+        time_vals = list(onset_cfg.get("time", []))
         sup = onset_cfg.get("sup", {})
         inf = onset_cfg.get("inf", {})
 
-        # Build one "series" per (face, component) combination
-        all_series: list[tuple[str, list, list]] = []
-        for face, data_dict in [("SUP", sup), ("INF", inf)]:
-            for comp, values in data_dict.items():
-                all_series.append((f"{face}_{comp}", time_vals, values))
+        # Build 4 plots mirroring the Bokeh layout: SUP, INF, Membrane, Bending.
+        # Each plot contains up to 3 series (e11, e22, e12), matching the
+        # LoadStep-Strain export structure (one panel per plot, multiple Plot nr rows).
+        _plot_specs = [
+            ("SUP",      f"Buckling SUP — {element_id}"),
+            ("INF",      f"Buckling INF — {element_id}"),
+            ("Membrane", f"Buckling Membrane — {element_id}"),
+            ("Bending",  f"Buckling Bending — {element_id}"),
+        ]
+        plots: list[tuple[str, list[tuple[str, list]]]] = []
+        for mode, chart_title in _plot_specs:
+            series_for_plot: list[tuple[str, list]] = []
+            for comp in ("e11", "e22", "e12"):
+                sup_arr = list(sup.get(comp, []))
+                inf_arr = list(inf.get(comp, []))
+                if mode == "SUP":
+                    if len(sup_arr) != len(time_vals):
+                        continue
+                    y_vals: list = sup_arr
+                elif mode == "INF":
+                    if len(inf_arr) != len(time_vals):
+                        continue
+                    y_vals = inf_arr
+                elif mode == "Membrane":
+                    if len(sup_arr) != len(time_vals) or len(inf_arr) != len(time_vals):
+                        continue
+                    y_vals = [(s + i_v) / 2.0 for s, i_v in zip(sup_arr, inf_arr)]
+                else:  # Bending
+                    if len(sup_arr) != len(time_vals) or len(inf_arr) != len(time_vals):
+                        continue
+                    y_vals = [(s - i_v) / 2.0 for s, i_v in zip(sup_arr, inf_arr)]
+                series_for_plot.append((comp, y_vals))
+            if series_for_plot:
+                plots.append((chart_title, series_for_plot))
 
         chunks = [
-            all_series[i: i + _MAX_GRAPHS_PER_PANEL]
-            for i in range(0, max(len(all_series), 1), _MAX_GRAPHS_PER_PANEL)
+            plots[i: i + _MAX_GRAPHS_PER_PANEL]
+            for i in range(0, max(len(plots), 1), _MAX_GRAPHS_PER_PANEL)
         ]
-        chart_title = f"Buckling — {element_id}"
         for chunk_idx, chunk in enumerate(chunks):
             panel_name = tab_name if chunk_idx == 0 else f"{tab_name} {chunk_idx + 1}"
             plf = _panel_layout(len(chunk))
-            for graph_idx, (series_name, x_vals, y_vals) in enumerate(chunk):
-                row = {
-                    "Channel name": series_name,
-                    "X Channel name": "Step Time",
-                    "Panel layout file": plf,
-                    "New panel name": panel_name,
-                    "Panel object name": f"GRAPH_{graph_idx + 1}",
-                    "Plot nr": 1,
-                    "Chart title": chart_title,
-                    "Formula": "",
-                }
-                for i, v in enumerate(_pad(list(x_vals)), start=1):
-                    row[f"x{i}"] = v
-                for i, v in enumerate(_pad(list(y_vals)), start=1):
-                    row[f"y{i}"] = v
-                rows.append(row)
+            for graph_idx, (chart_title, series_for_plot) in enumerate(chunk):
+                panel_object = f"GRAPH_{graph_idx + 1}"
+                for plot_nr, (channel_name, y_vals) in enumerate(series_for_plot, start=1):
+                    row = {
+                        "Channel name": channel_name,
+                        "X Channel name": "Step Time",
+                        "Panel layout file": plf,
+                        "New panel name": panel_name,
+                        "Panel object name": panel_object,
+                        "Plot nr": plot_nr,
+                        "Chart title": chart_title,
+                        "Formula": "",
+                    }
+                    for i, v in enumerate(_pad(time_vals), start=1):
+                        row[f"x{i}"] = v
+                    for i, v in enumerate(_pad(y_vals), start=1):
+                        row[f"y{i}"] = v
+                    rows.append(row)
 
         # Also export any extra loadstep graphs added to this buckling tab
         ls_graphs = b_tab.get_loadstep_graphs()

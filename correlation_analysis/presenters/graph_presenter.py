@@ -101,11 +101,13 @@ class GraphPresenter:
         except ValueError:
             return
 
+        formula = payload.get("formula", "")
         color = graph.consume_next_color()
         style = SeriesStyle(
             color=color,
             line_style=self._source_line_style(source_id),
             label=sensor_name,
+            formula=formula,
         )
         graph.add_series(sensor_name, source_id, x, y, style)
 
@@ -533,6 +535,8 @@ class GraphPresenter:
                         graph.add_series(s["sensor_name"], s["source_id"], x, y, style)
                     except (ValueError, KeyError):
                         pass
+                for b in gcfg.get("bands", []):
+                    graph.add_error_band(b["key"], b["pct"])
             elif gtype == "ratio":
                 if not gcfg:
                     continue
