@@ -580,8 +580,33 @@ class DataTableWidget(QWidget):
         self._model.set_mapped_names(mapped)
 
     def set_sensor_filter(self, text: str, regex: bool = False) -> None:
-        """Filter rows by text across sensor name and mapped-names column."""
+        """Filter rows by text across sensor name and mapped-names column.
+
+        When the filter is cleared, scrolls to and re-selects the row that
+        was selected before clearing.
+        """
+        # Remember which sensor was selected before the model reset wipes selection
+        selected_sensor: str | None = None
+        sel_rows = {idx.row() for idx in self._table.selectedIndexes()}
+        if sel_rows:
+            selected_sensor = self._model.sensor_name(min(sel_rows))
+
         self._model.set_filter(text, regex)
+
+        # After clearing the filter, restore selection and scroll to that sensor
+        if not text and selected_sensor is not None:
+            for r in range(self._model.rowCount()):
+                if self._model.sensor_name(r) == selected_sensor:
+                    idx = self._model.index(r, 0)
+                    self._table.selectionModel().select(
+                        idx,
+                        QItemSelectionModel.SelectionFlag.ClearAndSelect
+                        | QItemSelectionModel.SelectionFlag.Rows,
+                    )
+                    self._table.scrollTo(
+                        idx, QAbstractItemView.ScrollHint.PositionAtCenter
+                    )
+                    break
 
     def get_visible_sensor_names(self) -> list[str]:
         """Return sensor names currently visible (after text filter)."""
