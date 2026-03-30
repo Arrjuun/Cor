@@ -200,6 +200,16 @@ class DataModel:
         self._sources[source_id].df = df
         self._notify("updated", source_id)
 
+    def transpose_raw(self, source_id: str) -> None:
+        """Transpose the raw DataFrame and reset integer index/columns."""
+        ds = self._sources.get(source_id)
+        if ds is None:
+            return
+        df = ds.df.T.reset_index(drop=True)
+        df.columns = range(len(df.columns))
+        self._sources[source_id].df = df
+        self._notify("updated", source_id)
+
     def finalize_source(self, source_id: str) -> None:
         """Convert raw import DataFrame to analysis format (row 0 → headers, col 0 → index)."""
         from ..utils.csv_parser import finalize_dataframe

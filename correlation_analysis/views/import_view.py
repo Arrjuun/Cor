@@ -91,6 +91,7 @@ class ImportTableWidget(QFrame):
     scale_strain_requested = Signal(str, float)   # source_id, factor
     add_strain_requested = Signal(str, float)     # source_id, offset
     offset_loadsteps_requested = Signal(str, float)  # source_id, offset
+    transpose_requested = Signal(str)             # source_id
 
     def __init__(
         self,
@@ -230,6 +231,10 @@ class ImportTableWidget(QFrame):
         delete_cols_act = menu.addAction("Delete Selected Column(s)")
         delete_rows_act.triggered.connect(self._delete_selected_rows)
         delete_cols_act.triggered.connect(self._delete_selected_columns)
+        menu.addSeparator()
+        transpose_act = menu.addAction("Transpose Data")
+        transpose_act.setToolTip("Swap rows and columns (sensors ↔ load steps)")
+        transpose_act.triggered.connect(lambda: self.transpose_requested.emit(self._source_id))
         if self._is_valid:
             menu.addSeparator()
             scale_act = menu.addAction("Multiply Strain Values…")

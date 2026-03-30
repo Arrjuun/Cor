@@ -79,6 +79,7 @@ class ImportPresenter:
         table_widget.scale_strain_requested.connect(self._on_scale_strain)
         table_widget.add_strain_requested.connect(self._on_add_strain)
         table_widget.offset_loadsteps_requested.connect(self._on_offset_loadsteps)
+        table_widget.transpose_requested.connect(self._on_transpose)
 
         if not result.is_valid:
             self._view.show_warning(
@@ -196,6 +197,10 @@ class ImportPresenter:
 
     def _on_offset_loadsteps(self, source_id: str, offset: float) -> None:
         self._data.offset_raw_loadsteps(source_id, offset)
+        self._refresh_table(source_id)
+
+    def _on_transpose(self, source_id: str) -> None:
+        self._data.transpose_raw(source_id)
         self._refresh_table(source_id)
 
     def _refresh_table(self, source_id: str) -> None:
