@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QByteArray, QMimeData, Qt, Signal
+from PySide6.QtCore import QByteArray, QMimeData, QPointF, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -140,6 +140,8 @@ class LoadStepGraphWidget(QWidget):
     # Hover                                                                #
     # ------------------------------------------------------------------ #
 
+    _SNAP_PX = 20   # pixel radius within which the tooltip snaps to a data point
+
     def _on_mouse_moved(self, event) -> None:
         pos = event[0]
         if not self._series or not self._plot.sceneBoundingRect().contains(pos):
@@ -151,23 +153,45 @@ class LoadStepGraphWidget(QWidget):
         mp = vb.mapSceneToView(pos)
         x = mp.x()
 
-        self._vline.setPos(x)
+        # Find the nearest x value across all series (in data coordinates)
+        best_x = None
+        best_data_dist = np.inf
+        for info in self._series.values():
+            xdata = info["x"]
+            if len(xdata) == 0:
+                continue
+            idx = int(np.argmin(np.abs(xdata - x)))
+            d = abs(xdata[idx] - x)
+            if d < best_data_dist:
+                best_data_dist = d
+                best_x = xdata[idx]
+
+        if best_x is None:
+            self._vline.setVisible(False)
+            self._hover_label.setVisible(False)
+            return
+
+        # Convert that nearest data-x to scene pixels and check proximity
+        scene_nearest = vb.mapViewToScene(QPointF(best_x, mp.y()))
+        if abs(pos.x() - scene_nearest.x()) > self._SNAP_PX:
+            self._vline.setVisible(False)
+            self._hover_label.setVisible(False)
+            return
+
+        self._vline.setPos(best_x)
         self._vline.setVisible(True)
 
-        lines = [f"<b>Load Step: {x:.4g}</b>"]
+        lines = [f"<b>Load Step: {best_x:.4g}</b>"]
         for info in self._series.values():
             xdata, ydata = info["x"], info["y"]
             if len(xdata) == 0:
                 continue
-            idx = int(np.argmin(np.abs(xdata - x)))
+            idx = int(np.argmin(np.abs(xdata - best_x)))
             label = info["style"].label or info["sensor_name"]
             lines.append(f"{label}: {ydata[idx]:.6g}")
 
         self._hover_label.setHtml("<br>".join(lines))
-        # Clamp label to stay within view
-        vr = vb.viewRange()
-        lx = x if x < (vr[0][0] + vr[0][1]) / 2 else x
-        self._hover_label.setPos(lx, mp.y())
+        self._hover_label.setPos(best_x, mp.y())
         self._hover_label.setVisible(True)
 
     # ------------------------------------------------------------------ #
