@@ -1,22 +1,23 @@
 """Export settings dialog for the buckling analysis output files."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
+    QMessageBox,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -24,20 +25,54 @@ from PySide6.QtWidgets import (
 
 from ..utils.buckling_exporter import BucklingExportSettings
 
+# Root of the project (…/Correlation/) — two levels up from this file's package
+_SCRIPT_ROOT = Path(__file__).resolve().parents[2]
+
+# Fixed paths relative to the script root
+_PYTHON_ENV_REL = "../../Envs/env"
+_FEMBUCKLING_REL = "../../Buckling/fembuckling"
+
+
+def _make_timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _auto_csv_path(ts: str) -> Path:
+    """<cwd>/Buckling_Exports/buckling_<ts>.csv"""
+    return Path.cwd() / "Buckling_Exports" / f"buckling_{ts}.csv"
+
+
+def _auto_output_dir(ts: str) -> Path:
+    """<cwd>/Buckling_Exports/results_<ts>/"""
+    return Path.cwd() / "Buckling_Exports" / f"results_{ts}"
+
+
+def _auto_env_path() -> Path:
+    return (_SCRIPT_ROOT / _PYTHON_ENV_REL).resolve()
+
+
+def _auto_fembuckling_path() -> Path:
+    return (_SCRIPT_ROOT / _FEMBUCKLING_REL).resolve()
+
 
 class BucklingExportDialog(QDialog):
-    """Dialog for configuring CSV / YAML export before running buckling analysis.
+    """Dialog for configuring buckling analysis export settings.
 
-    Collects:
-    - CSV output file path
-    - Results output directory
-    - Analysis strategy and its parameters
+    Auto-generated paths (CSV, output dir, Python env, fembuckling dir) are
+    shown read-only.  Only analysis parameters are editable.
     """
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Buckling Analysis — Export Settings")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(620)
+
+        self._ts = _make_timestamp()
+        self._csv_path = _auto_csv_path(self._ts)
+        self._output_dir = _auto_output_dir(self._ts)
+        self._env_path = _auto_env_path()
+        self._fembuckling_path = _auto_fembuckling_path()
+
         self._build_ui()
 
     # ------------------------------------------------------------------ #
@@ -48,116 +83,104 @@ class BucklingExportDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        # ---- Output files ----
-        files_box = QGroupBox("Output Files")
-        files_form = QFormLayout(files_box)
-        files_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        # ---- Auto-generated paths (read-only) ----
+        paths_box = QGroupBox("Auto-generated Paths")
+        paths_form = QFormLayout(paths_box)
+        paths_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # CSV path
-        csv_row = QHBoxLayout()
-        self._csv_edit = QLineEdit()
-        self._csv_edit.setPlaceholderText("Select CSV output file…")
-        csv_browse = QPushButton("Browse…")
-        csv_browse.setCheckable(False)
-        csv_browse.setFixedWidth(80)
-        csv_browse.clicked.connect(self._browse_csv)
-        csv_row.addWidget(self._csv_edit)
-        csv_row.addWidget(csv_browse)
-        files_form.addRow("CSV file:", csv_row)
+        self._csv_display = self._ro_field(str(self._csv_path))
+        paths_form.addRow("CSV file:", self._csv_display)
 
-        # Output directory
-        dir_row = QHBoxLayout()
-        self._dir_edit = QLineEdit()
-        self._dir_edit.setPlaceholderText("Select results output directory…")
-        dir_browse = QPushButton("Browse…")
-        dir_browse.setCheckable(False)
-        dir_browse.setFixedWidth(80)
-        dir_browse.clicked.connect(self._browse_dir)
-        dir_row.addWidget(self._dir_edit)
-        dir_row.addWidget(dir_browse)
-        files_form.addRow("Results directory:", dir_row)
+        self._dir_display = self._ro_field(str(self._output_dir))
+        paths_form.addRow("Results directory:", self._dir_display)
 
-        layout.addWidget(files_box)
+        self._env_display = self._ro_field(str(self._env_path))
+        paths_form.addRow("Python environment:", self._env_display)
 
-        # ---- Analysis strategy ----
-        strategy_box = QGroupBox("Analysis Strategy")
-        strategy_form = QFormLayout(strategy_box)
-        strategy_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._fb_display = self._ro_field(str(self._fembuckling_path))
+        paths_form.addRow("fembuckling dir:", self._fb_display)
 
-        self._strategy_combo = QComboBox()
-        self._strategy_combo.addItems(["hybrid", "minima", "acceleration"])
-        strategy_form.addRow("Active strategy:", self._strategy_combo)
+        layout.addWidget(paths_box)
 
-        layout.addWidget(strategy_box)
+        # ---- Analysis settings ----
+        analysis_box = QGroupBox("Analysis Settings")
+        analysis_form = QFormLayout(analysis_box)
+        analysis_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # ---- Strategy parameters ----
-        params_box = QGroupBox("Strategy Parameters")
-        params_form = QFormLayout(params_box)
-        params_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        # Detection methods
+        method_row = QHBoxLayout()
+        self._method_acceleration = QCheckBox("acceleration")
+        self._method_acceleration.setChecked(True)
+        self._method_reversal = QCheckBox("reversal")
+        self._method_reversal.setChecked(False)
+        method_row.addWidget(self._method_acceleration)
+        method_row.addWidget(self._method_reversal)
+        method_row.addStretch()
+        method_label = QLabel("method:")
+        method_label.setToolTip(
+            "Detection method(s). Generates: method: [acceleration] or "
+            "method: [reversal, acceleration]"
+        )
+        analysis_form.addRow(method_label, method_row)
 
-        # minima
-        self._minima_prominence = QDoubleSpinBox()
-        self._minima_prominence.setRange(0.0, 1e6)
-        self._minima_prominence.setDecimals(4)
-        self._minima_prominence.setValue(0.0)
-        self._minima_prominence.setToolTip("Minima strategy: minima_prominence")
-        params_form.addRow("Minima prominence:", self._minima_prominence)
+        # Chain
+        self._chain_check = QCheckBox()
+        self._chain_check.setChecked(False)
+        self._chain_check.setToolTip(
+            "An element is only considered buckled if every selected method detects it."
+        )
+        analysis_form.addRow("chain:", self._chain_check)
 
-        # acceleration
-        self._window_length = QSpinBox()
-        self._window_length.setRange(1, 999)
-        self._window_length.setSingleStep(2)
-        self._window_length.setValue(7)
-        self._window_length.setToolTip("Acceleration strategy: Savitzky-Golay window length (must be odd)")
-        params_form.addRow("Window length:", self._window_length)
+        # savgol_window
+        self._savgol_window = QSpinBox()
+        self._savgol_window.setRange(1, 999)
+        self._savgol_window.setSingleStep(2)
+        self._savgol_window.setValue(7)
+        self._savgol_window.setToolTip("Window size for Savitzky-Golay filter (must be odd)")
+        analysis_form.addRow("savgol_window:", self._savgol_window)
 
-        self._polyorder = QSpinBox()
-        self._polyorder.setRange(1, 10)
-        self._polyorder.setValue(2)
-        self._polyorder.setToolTip("Acceleration strategy: Savitzky-Golay polynomial order")
-        params_form.addRow("Poly order:", self._polyorder)
+        # polynomial_degree
+        self._polynomial_degree = QSpinBox()
+        self._polynomial_degree.setRange(1, 10)
+        self._polynomial_degree.setValue(4)
+        self._polynomial_degree.setToolTip("Polynomial order for Savitzky-Golay filter")
+        analysis_form.addRow("polynomial_degree:", self._polynomial_degree)
 
-        # hybrid
-        self._jerk_threshold = _ScientificSpinBox(default=1.0e-5)
-        self._jerk_threshold.setToolTip("Hybrid strategy: acceleration_jerk_threshold")
-        params_form.addRow("Jerk threshold:", self._jerk_threshold)
+        # acceleration_prominence
+        self._acceleration_prominence = QDoubleSpinBox()
+        self._acceleration_prominence.setRange(0.0, 1e6)
+        self._acceleration_prominence.setDecimals(4)
+        self._acceleration_prominence.setValue(0.1)
+        self._acceleration_prominence.setToolTip(
+            "Minimum relative acceleration prominence (2nd derivative) for a peak"
+        )
+        analysis_form.addRow("acceleration_prominence:", self._acceleration_prominence)
 
-        self._magnitude_threshold = _ScientificSpinBox(default=1.0e-6)
-        self._magnitude_threshold.setToolTip("Hybrid strategy: min_principal_magnitude_threshold")
-        params_form.addRow("Magnitude threshold:", self._magnitude_threshold)
+        # reversal_prominence
+        self._reversal_prominence = QDoubleSpinBox()
+        self._reversal_prominence.setRange(0.0, 1e6)
+        self._reversal_prominence.setDecimals(6)
+        self._reversal_prominence.setValue(0.0005)
+        self._reversal_prominence.setSingleStep(0.0001)
+        self._reversal_prominence.setToolTip(
+            "Minimum relative strain prominence at a reversal point"
+        )
+        analysis_form.addRow("reversal_prominence:", self._reversal_prominence)
 
-        layout.addWidget(params_box)
+        # workers
+        self._workers = QSpinBox()
+        self._workers.setRange(1, 64)
+        self._workers.setValue(4)
+        self._workers.setToolTip("Number of parallel worker processes")
+        analysis_form.addRow("workers:", self._workers)
 
-        # ---- Run Analysis ----
-        script_box = QGroupBox("Run Analysis (optional)")
-        script_form = QFormLayout(script_box)
-        script_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        # log_level
+        self._log_level = QComboBox()
+        self._log_level.addItems(["INFO", "DEBUG", "WARNING", "ERROR"])
+        self._log_level.setCurrentText("INFO")
+        analysis_form.addRow("log_level:", self._log_level)
 
-        # Python environment directory
-        env_row = QHBoxLayout()
-        self._env_edit = QLineEdit()
-        self._env_edit.setPlaceholderText("Select Python environment directory (Envs/myenv)…")
-        env_browse = QPushButton("Browse…")
-        env_browse.setCheckable(False)
-        env_browse.setFixedWidth(80)
-        env_browse.clicked.connect(self._browse_env_dir)
-        env_row.addWidget(self._env_edit)
-        env_row.addWidget(env_browse)
-        script_form.addRow("Python environment:", env_row)
-
-        # fembuckling package directory
-        fb_row = QHBoxLayout()
-        self._fb_edit = QLineEdit()
-        self._fb_edit.setPlaceholderText("Select fembuckling package directory…")
-        fb_browse = QPushButton("Browse…")
-        fb_browse.setCheckable(False)
-        fb_browse.setFixedWidth(80)
-        fb_browse.clicked.connect(self._browse_fembuckling_dir)
-        fb_row.addWidget(self._fb_edit)
-        fb_row.addWidget(fb_browse)
-        script_form.addRow("fembuckling dir:", fb_row)
-
-        layout.addWidget(script_box)
+        layout.addWidget(analysis_box)
 
         # ---- Buttons ----
         buttons = QDialogButtonBox(
@@ -167,46 +190,21 @@ class BucklingExportDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    @staticmethod
+    def _ro_field(text: str) -> QLineEdit:
+        """Read-only, non-editable line edit."""
+        edit = QLineEdit(text)
+        edit.setReadOnly(True)
+        edit.setStyleSheet("QLineEdit { background: #F5F5F5; color: #616161; }")
+        return edit
+
     # ------------------------------------------------------------------ #
     # Handlers                                                             #
     # ------------------------------------------------------------------ #
 
-    def _browse_csv(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Buckling CSV",
-            filter="CSV Files (*.csv);;All Files (*)",
-        )
-        if path:
-            if not path.lower().endswith(".csv"):
-                path += ".csv"
-            self._csv_edit.setText(path)
-
-    def _browse_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Results Directory")
-        if path:
-            self._dir_edit.setText(path)
-
-    def _browse_env_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select Python Environment Directory")
-        if path:
-            self._env_edit.setText(path)
-
-    def _browse_fembuckling_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select fembuckling Package Directory")
-        if path:
-            self._fb_edit.setText(path)
-
     def _on_accept(self) -> None:
-        csv_path = self._csv_edit.text().strip()
-        out_dir = self._dir_edit.text().strip()
-        if not csv_path:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Input", "Please specify a CSV output file path.")
-            return
-        if not out_dir:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Input", "Please specify a results output directory.")
+        if not self._method_acceleration.isChecked() and not self._method_reversal.isChecked():
+            QMessageBox.warning(self, "Missing Input", "Please select at least one detection method.")
             return
         self.accept()
 
@@ -216,45 +214,23 @@ class BucklingExportDialog(QDialog):
 
     def get_settings(self) -> BucklingExportSettings:
         """Return the current form values as a ``BucklingExportSettings`` object."""
+        methods: list[str] = []
+        if self._method_acceleration.isChecked():
+            methods.append("acceleration")
+        if self._method_reversal.isChecked():
+            methods.append("reversal")
+
         return BucklingExportSettings(
-            csv_path=self._csv_edit.text().strip(),
-            output_dir=self._dir_edit.text().strip(),
-            active_strategy=self._strategy_combo.currentText(),
-            minima_prominence=self._minima_prominence.value(),
-            window_length=self._window_length.value(),
-            polyorder=self._polyorder.value(),
-            acceleration_jerk_threshold=self._jerk_threshold.value(),
-            min_principal_magnitude_threshold=self._magnitude_threshold.value(),
-            python_env_dir=self._env_edit.text().strip(),
-            fembuckling_dir=self._fb_edit.text().strip(),
+            csv_path=str(self._csv_path),
+            output_dir=str(self._output_dir),
+            method=methods,
+            chain=self._chain_check.isChecked(),
+            savgol_window=self._savgol_window.value(),
+            polynomial_degree=self._polynomial_degree.value(),
+            acceleration_prominence=self._acceleration_prominence.value(),
+            reversal_prominence=self._reversal_prominence.value(),
+            workers=self._workers.value(),
+            log_level=self._log_level.currentText(),
+            python_env_dir=str(self._env_path),
+            fembuckling_dir=str(self._fembuckling_path),
         )
-
-
-# ------------------------------------------------------------------ #
-# Helper: scientific-notation double spin box                          #
-# ------------------------------------------------------------------ #
-
-class _ScientificSpinBox(QWidget):
-    """A simple QLineEdit that accepts and displays values in scientific notation."""
-
-    def __init__(self, default: float = 1.0e-5, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self._edit = QLineEdit(f"{default:.1e}")
-        self._edit.setFixedWidth(120)
-        layout.addWidget(self._edit)
-        layout.addStretch()
-        self._default = default
-
-    def value(self) -> float:
-        try:
-            return float(self._edit.text().strip())
-        except ValueError:
-            return self._default
-
-    def setValue(self, v: float) -> None:
-        self._edit.setText(f"{v:.1e}")
-
-    def setToolTip(self, tip: str) -> None:  # type: ignore[override]
-        self._edit.setToolTip(tip)

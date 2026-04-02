@@ -23,12 +23,14 @@ from ..models.data_model import DataModel
 class BucklingExportSettings:
     csv_path: str = ""
     output_dir: str = ""
-    active_strategy: str = "hybrid"
-    minima_prominence: float = 0.0
-    window_length: int = 7
-    polyorder: int = 2
-    acceleration_jerk_threshold: float = 1.0e-5
-    min_principal_magnitude_threshold: float = 1.0e-6
+    method: list = field(default_factory=lambda: ["acceleration"])
+    chain: bool = False
+    savgol_window: int = 7
+    polynomial_degree: int = 4
+    acceleration_prominence: float = 0.1
+    reversal_prominence: float = 0.0005
+    workers: int = 4
+    log_level: str = "INFO"
     python_env_dir: str = ""
     fembuckling_dir: str = ""
 
@@ -221,30 +223,48 @@ def generate_yaml(settings: BucklingExportSettings) -> str:
     csv_path = Path(settings.csv_path).as_posix()
     out_dir = Path(settings.output_dir).as_posix()
 
-    jerk = f"{settings.acceleration_jerk_threshold:.1e}"
-    mag = f"{settings.min_principal_magnitude_threshold:.1e}"
+    method_list = ", ".join(settings.method) if settings.method else "acceleration"
+    chain_str = "True" if settings.chain else "False"
 
     return (
+        f"# vt_s_fembucklingonset\n"
+        f"# post processing module intended to detect the onset of buckling"
+        f" coming from the strain evolution in shells\n"
+        f"\n"
         f"fembuckling_onset:\n"
+        f"  # --- Input Files ---\n"
         f"  inputs:\n"
-        f"    # Point to the CSV file.\n"
         f"    femresult: \"{csv_path}\"\n"
         f"\n"
+        f"  # --- Output settings ---\n"
         f"  outputs:\n"
-        f"    # This path determines where the results folder is created.\n"
         f"    directory: \"{out_dir}\"\n"
         f"\n"
+        f"  # --- Analysis settings ---\n"
         f"  analysis:\n"
-        f"    active_strategy: \"{settings.active_strategy}\"\n"
-        f"    strategy_settings:\n"
-        f"      minima:\n"
-        f"        minima_prominence: {settings.minima_prominence}\n"
-        f"      acceleration:\n"
-        f"        window_length: {settings.window_length}\n"
-        f"        polyorder: {settings.polyorder}\n"
-        f"      hybrid:\n"
-        f"        acceleration_jerk_threshold: {jerk}\n"
-        f"        min_principal_magnitude_threshold: {mag}\n"
+        f"    # Detection method(s): 'reversal', 'acceleration', or both separated by comma"
+        f" (note, keep the brackets)\n"
+        f"    method: [{method_list}]\n"
+        f"\n"
+        f"    # Chain detection methods: an element is only considered buckled if every method detects it.\n"
+        f"    chain: {chain_str}\n"
+        f"\n"
+        f"    # Window size for Savitzky-Golay filter (must be odd)\n"
+        f"    savgol_window: {settings.savgol_window}\n"
+        f"\n"
+        f"    # Polynomial order for filter\n"
+        f"    polynomial_degree: {settings.polynomial_degree}\n"
+        f"\n"
+        f"    # Minimum relative acceleration prominence (2nd derivative) for a peak\n"
+        f"    acceleration_prominence: {settings.acceleration_prominence}\n"
+        f"\n"
+        f"    # Minimum relative strain prominence at a reversal point\n"
+        f"    reversal_prominence: {settings.reversal_prominence}\n"
+        f"\n"
+        f"    # Parallel execution settings\n"
+        f"    workers: {settings.workers}\n"
+        f"\n"
+        f"log_level: {settings.log_level}\n"
     )
 
 
