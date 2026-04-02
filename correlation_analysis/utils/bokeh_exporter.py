@@ -573,24 +573,23 @@ class BokehExporter:
                 labeled_renderers.append((comp, line))
                 labeled_renderers.append((comp, sc))
 
-            # Dummy line for onset legend entry (Span does not support legend_label)
-            if onset_timesteps:
+            # Dummy lines for onset legend entries (Span does not support legend_label)
+            for ts in onset_timesteps:
                 p.line(
                     [], [],
                     line_color=_ONSET_COLOR,
                     line_dash="dashed",
                     line_width=2,
-                    legend_label="Buckling Onset",
+                    legend_label=f"Buckling Onset: {ts:.6g}",
                 )
-                for ts in onset_timesteps:
-                    vline = Span(
-                        location=ts,
-                        dimension="height",
-                        line_color=_ONSET_COLOR,
-                        line_dash="dashed",
-                        line_width=2,
-                    )
-                    p.add_layout(vline)
+                vline = Span(
+                    location=ts,
+                    dimension="height",
+                    line_color=_ONSET_COLOR,
+                    line_dash="dashed",
+                    line_width=2,
+                )
+                p.add_layout(vline)
 
             if legend_items:
                 legend = Legend(items=legend_items, click_policy="hide")
