@@ -51,17 +51,10 @@ class GraphTabContent(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setSpacing(4)
 
-        # Scroll area
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        self._inner_layout = QVBoxLayout(container)
-        self._inner_layout.setSpacing(8)
-        scroll.setWidget(container)
-        self._layout.addWidget(scroll)
-
-        # Toolbar: add buttons + columns spinbox
-        btn_layout = QHBoxLayout()
+        # Toolbar: fixed above the scroll area (not inside it)
+        self._toolbar_widget = QWidget()
+        btn_layout = QHBoxLayout(self._toolbar_widget)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
         add_ls = QPushButton("+ LoadStep Graph")
         add_ratio = QPushButton("+ Ratio Graph")
         add_ls.setCheckable(False)
@@ -81,7 +74,16 @@ class GraphTabContent(QWidget):
         self._col_spin.setToolTip("Number of graph columns in this tab")
         self._col_spin.valueChanged.connect(self._on_columns_changed)
         btn_layout.addWidget(self._col_spin)
-        self._inner_layout.addLayout(btn_layout)
+        self._layout.addWidget(self._toolbar_widget)
+
+        # Scroll area (graphs only)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        container = QWidget()
+        self._inner_layout = QVBoxLayout(container)
+        self._inner_layout.setSpacing(8)
+        self._scroll.setWidget(container)
+        self._layout.addWidget(self._scroll)
 
         # Grid container for graphs
         self._graphs_container = QWidget()
@@ -143,6 +145,40 @@ class GraphTabContent(QWidget):
             row = i // self._num_columns
             col = i % self._num_columns
             self._graph_layout.addWidget(g, row, col)
+        self._update_graph_sizes()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_graph_sizes()
+
+    def _update_graph_sizes(self) -> None:
+        """Fix each graph to half the scroll viewport dimensions when graphs
+        span multiple columns / rows; otherwise restore free sizing."""
+        num_rows = (len(self._all_graphs) + self._num_columns - 1) // self._num_columns if self._all_graphs else 0
+        multi_col = self._num_columns > 1
+        multi_row = num_rows > 1
+
+        vp = self._scroll.viewport()
+        spacing = self._graph_layout.spacing()
+        im = self._inner_layout.contentsMargins()
+        gm = self._graph_layout.contentsMargins()
+        # Width: viewport shrinks by both layout margin layers + one column gap
+        half_w = max(300, (vp.width()  - im.left() - im.right()  - gm.left() - gm.right()  - spacing) // 2)
+        # Height: same but vertical margins + one row gap
+        half_h = max(200, (vp.height() - im.top()  - im.bottom() - gm.top()  - gm.bottom() - spacing) // 2)
+
+        for g in self._all_graphs:
+            if multi_col:
+                g.setFixedWidth(half_w)
+            else:
+                g.setMinimumWidth(0)
+                g.setMaximumWidth(16_777_215)
+
+            if multi_col and multi_row:
+                g.setFixedHeight(half_h)
+            else:
+                g.setMinimumHeight(350)
+                g.setMaximumHeight(16_777_215)  # Qt QWIDGETSIZE_MAX — free sizing
 
     def _on_columns_changed(self, value: int) -> None:
         self._num_columns = value
@@ -206,15 +242,15 @@ class BucklingTabContent(GraphTabContent):
         self._onset_widget = onset_widget
         super().__init__(tab_id, parent)
 
-    # Override to hide graph-add buttons and place onset widget below the toolbar
+    # Override to hide graph-add buttons and place onset widget inside the scroll area
     def _build_ui(self) -> None:
         super()._build_ui()
         # Hide the + LoadStep / + Ratio buttons — buckling tabs only show onset plots
         self._add_ls_btn.hide()
         self._add_ratio_btn.hide()
-        # _inner_layout currently has: [0] btn_layout (columns only), [1] _graphs_container, [2] stretch
-        # Insert the onset widget at position 1 so the columns toolbar stays at the top
-        self._inner_layout.insertWidget(1, self._onset_widget)
+        # _inner_layout now has: [0] _graphs_container, [1] stretch
+        # Insert the onset widget before the graphs container
+        self._inner_layout.insertWidget(0, self._onset_widget)
 
     def _post_init(self) -> None:
         """Buckling tabs start with no default graphs."""

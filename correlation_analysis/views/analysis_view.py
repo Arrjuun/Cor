@@ -82,14 +82,14 @@ class AnalysisView(QWidget):
 
         left_layout.addLayout(left_header)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
         self._tables_container = QWidget()
         self._tables_inner = QVBoxLayout(self._tables_container)
         self._tables_inner.setSpacing(8)
         self._tables_inner.addStretch()
-        scroll.setWidget(self._tables_container)
-        left_layout.addWidget(scroll)
+        self._scroll.setWidget(self._tables_container)
+        left_layout.addWidget(self._scroll)
 
         splitter.addWidget(left_panel)
 
@@ -139,6 +139,7 @@ class AnalysisView(QWidget):
         )
         self._tables_inner.addWidget(widget)
         self._tables_inner.addStretch()
+        self._update_table_heights()
         return widget
 
     def clear_tables(self) -> None:
@@ -152,6 +153,18 @@ class AnalysisView(QWidget):
         w = self._table_widgets.get(source_id)
         if w:
             w.update_dataframe(df)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_table_heights()
+
+    def _update_table_heights(self) -> None:
+        """Keep each table at half the scroll area's visible height."""
+        m = self._tables_inner.contentsMargins()
+        overhead = self._tables_inner.spacing() + m.top() + m.bottom()
+        half = max(120, (self._scroll.viewport().height() - overhead) // 2)
+        for w in self._table_widgets.values():
+            w.setFixedHeight(half)
 
     def _emit_filter(self, _=None) -> None:
         self.filter_changed.emit(self._filter_edit.text(), self._regex_btn.isChecked())
