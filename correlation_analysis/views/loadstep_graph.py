@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QByteArray, QMimeData, QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -68,7 +68,6 @@ class LoadStepGraphWidget(QWidget):
         self._series: dict[str, dict] = {}
         self._bands: dict[str, dict] = {}   # band_id → {key, pct, upper_item, lower_item, fill_item}
         self._color_idx = 0
-        self._dragging = False
         self._build_ui(title)
 
     def get_title(self) -> str:
@@ -106,7 +105,7 @@ class LoadStepGraphWidget(QWidget):
         self._plot.setLabel("left", "Strain")
         self._plot.addLegend(offset=(10, 10))
 
-        # Event filter: context menu on plot, block mouse during drag on viewport
+        # Event filter: context menu on plot, intercept drag-and-drop events
         self._plot.installEventFilter(self)
         self._plot.viewport().installEventFilter(self)
 
@@ -124,7 +123,7 @@ class LoadStepGraphWidget(QWidget):
             border=pg.mkPen(color="#BDBDBD", width=1, cosmetic=True),
         )
         self._hover_label.setZValue(200)
-        self._plot.addItem(self._hover_label)
+        self._plot.addItem(self._hover_label, ignoreBounds=True)
         self._hover_label.setVisible(False)
 
         # SignalProxy throttles mouse-move events to 30 fps
@@ -333,7 +332,7 @@ class LoadStepGraphWidget(QWidget):
         self._color_idx = 0
         # Re-add overlay items lost by clear()
         self._plot.addItem(self._vline, ignoreBounds=True)
-        self._plot.addItem(self._hover_label)
+        self._plot.addItem(self._hover_label, ignoreBounds=True)
 
     def to_config(self) -> dict:
         return {
@@ -435,76 +434,38 @@ class LoadStepGraphWidget(QWidget):
     def _vb(self):
         return self._plot.getPlotItem().getViewBox()
 
-    def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasFormat(_MIME_ROW):
-            self._dragging = True
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-
-    def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasFormat(_MIME_ROW):
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-
-    def dragLeaveEvent(self, event) -> None:
-        self._dragging = False
-        self._release_plot_mouse()
-        super().dragLeaveEvent(event)
-
-    def dropEvent(self, event) -> None:
-        self._dragging = False
-        if event.mimeData().hasFormat(_MIME_ROW):
-            raw = bytes(event.mimeData().data(_MIME_ROW)).decode()
-            try:
-                data = json.loads(raw)
-                # Payload is always a list; support legacy single-dict for safety
-                if isinstance(data, dict):
-                    data = [data]
-                for payload in data:
-                    self.series_dropped.emit(payload)
-            except json.JSONDecodeError:
-                pass
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-        # Defer to the next event-loop tick so all DnD bookkeeping and any
-        # modal-dialog events raised by series_dropped are fully processed first.
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, self._release_plot_mouse)
-
-    def _release_plot_mouse(self) -> None:
-        """Clear stuck mouse-drag state in pyqtgraph after a DnD drop.
-
-        When a modal dialog is shown synchronously inside series_dropped (e.g.
-        "add mapped sensors?"), its event loop can leave pyqtgraph's GraphicsScene
-        with stale entries in dragButtons, causing the ViewBox to pan/zoom on
-        plain mouse-move. Clear that state directly.
-        """
-        from PySide6.QtWidgets import QApplication
-        scene = self._plot.scene()
-        if hasattr(scene, "dragButtons"):
-            scene.dragButtons.clear()
-        if hasattr(scene, "clickEvents"):
-            scene.clickEvents.clear()
-        while QApplication.overrideCursor() is not None:
-            QApplication.restoreOverrideCursor()
-
     def eventFilter(self, obj, event) -> bool:
         from PySide6.QtCore import QEvent
         et = event.type()
+
+        # Intercept drag-and-drop before pyqtgraph's scene sees them.
+        # Handling here (returning True) prevents the ViewBox from entering a
+        # stale drag state that causes edge-panning after the drop.
+        if et == QEvent.Type.DragEnter:
+            if event.mimeData().hasFormat(_MIME_ROW):
+                event.acceptProposedAction()
+                return True
+        elif et == QEvent.Type.DragMove:
+            if event.mimeData().hasFormat(_MIME_ROW):
+                event.acceptProposedAction()
+                return True
+        elif et == QEvent.Type.Drop:
+            if event.mimeData().hasFormat(_MIME_ROW):
+                raw = bytes(event.mimeData().data(_MIME_ROW)).decode()
+                try:
+                    data = json.loads(raw)
+                    if isinstance(data, dict):
+                        data = [data]
+                    for payload in data:
+                        self.series_dropped.emit(payload)
+                except json.JSONDecodeError:
+                    pass
+                event.acceptProposedAction()
+                return True
+
         # Right-click context menu on plot
         if obj is self._plot and et == QEvent.Type.ContextMenu:
             self._show_series_context_menu(event.globalPos())
             return True
-        # Block all mouse interaction on the viewport while a drag is in progress.
-        # This prevents pyqtgraph's scene from interpreting drag motion as pan/zoom.
-        if obj is self._plot.viewport() and self._dragging:
-            if et in (
-                QEvent.Type.MouseButtonPress,
-                QEvent.Type.MouseButtonDblClick,
-                QEvent.Type.MouseMove,
-            ):
-                return True
+
         return super().eventFilter(obj, event)
