@@ -63,11 +63,16 @@ class BucklingOnsetWidget(QWidget):
         inf: dict[str, np.ndarray],
         onset_timesteps: list[float],
         source_label: str = "",
+        sup_names: Optional[dict[str, str]] = None,
+        inf_names: Optional[dict[str, str]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._element_id = element_id
         self._source_label = source_label
+        # Per-component sensor names for legend labels
+        self._sup_names: dict[str, str] = sup_names or {}
+        self._inf_names: dict[str, str] = inf_names or {}
         # Store arrays for to_config() / export
         self._time = np.asarray(time, dtype=float)
         self._sup = {k: np.asarray(v, dtype=float) for k, v in sup.items()}
@@ -107,7 +112,12 @@ class BucklingOnsetWidget(QWidget):
         # Build the four plot widgets: SUP → INF → Membrane → Bending
         self._plot_widgets: list[pg.PlotWidget] = []
         for plot_key, y_label, _ in _PLOT_SPECS:
-            pw = self._make_plot(plot_key, y_label, self._time, self._sup, self._inf, self._onset_timesteps)
+            pw = self._make_plot(
+                plot_key, y_label,
+                self._time, self._sup, self._inf,
+                self._onset_timesteps,
+                self._sup_names, self._inf_names,
+            )
             self._plot_widgets.append(pw)
 
         self._num_columns = 1
@@ -135,6 +145,8 @@ class BucklingOnsetWidget(QWidget):
         sup: dict[str, np.ndarray],
         inf: dict[str, np.ndarray],
         onset_timesteps: list[float],
+        sup_names: dict[str, str] | None = None,
+        inf_names: dict[str, str] | None = None,
     ) -> pg.PlotWidget:
         """Build one pyqtgraph PlotWidget for *plot_key*
         (``"SUP"``, ``"INF"``, ``"Membrane"``, or ``"Bending"``)."""
@@ -149,38 +161,45 @@ class BucklingOnsetWidget(QWidget):
         plot.setMinimumHeight(360)
         plot.addLegend(offset=(10, 10))
 
+        _sup_names = sup_names or {}
+        _inf_names = inf_names or {}
+
         for comp in ("e11", "e22", "e12"):
             sup_arr = sup.get(comp)
             inf_arr = inf.get(comp)
 
-            # Determine the y-values for this plot type
+            # Determine the y-values and legend name for this plot type
             if plot_key == "SUP":
                 if sup_arr is None or len(sup_arr) != len(time):
                     continue
                 y = sup_arr
+                legend_name = _sup_names.get(comp, comp)
             elif plot_key == "INF":
                 if inf_arr is None or len(inf_arr) != len(time):
                     continue
                 y = inf_arr
+                legend_name = _inf_names.get(comp, comp)
             elif plot_key == "Membrane":
                 if sup_arr is None or inf_arr is None:
                     continue
                 if len(sup_arr) != len(time) or len(inf_arr) != len(time):
                     continue
                 y = (sup_arr + inf_arr) / 2.0
+                legend_name = comp
             else:  # Bending
                 if sup_arr is None or inf_arr is None:
                     continue
                 if len(sup_arr) != len(time) or len(inf_arr) != len(time):
                     continue
                 y = (sup_arr - inf_arr) / 2.0
+                legend_name = comp
 
             color = _SERIES_COLORS.get(comp, "#000000")
             pen = pg.mkPen(color=color, width=2, cosmetic=True)
             plot.plot(
                 time, y,
                 pen=pen,
-                name=comp,
+                name=legend_name,
                 symbol="o",
                 symbolSize=6,
                 symbolBrush=pg.mkBrush(color),
@@ -220,6 +239,8 @@ class BucklingOnsetWidget(QWidget):
             "type": "buckling_onset",
             "element_id": self._element_id,
             "source_label": self._source_label,
+            "sup_names": self._sup_names,
+            "inf_names": self._inf_names,
             "onset_timesteps": list(self._onset_timesteps),
             "time": self._time.tolist(),
             "sup": {k: v.tolist() for k, v in self._sup.items()},
@@ -236,4 +257,6 @@ class BucklingOnsetWidget(QWidget):
             inf={k: np.array(v, dtype=float) for k, v in cfg.get("inf", {}).items()},
             onset_timesteps=cfg.get("onset_timesteps", []),
             source_label=cfg.get("source_label", ""),
+            sup_names=cfg.get("sup_names", {}),
+            inf_names=cfg.get("inf_names", {}),
         )

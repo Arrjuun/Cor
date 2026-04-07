@@ -477,10 +477,14 @@ class AnalysisPresenter:
             if isinstance(elem_info, dict):
                 source_label = elem_info.get("source_label", "")
                 sensor_names: list[str] = elem_info.get("sensor_names", [])
+                sup_names: dict[str, str] = elem_info.get("sup_names", {})
+                inf_names: dict[str, str] = elem_info.get("inf_names", {})
             else:
                 # Legacy plain-string fallback
                 source_label = str(elem_info)
                 sensor_names = []
+                sup_names = {}
+                inf_names = {}
 
             display_id = sensor_names[0] if sensor_names else original_id
 
@@ -492,6 +496,8 @@ class AnalysisPresenter:
                 inf=inf,
                 onset_timesteps=onset_timesteps,
                 source_label=source_label,
+                sup_names=sup_names,
+                inf_names=inf_names,
             )
             tab_view.add_buckling_tab(onset_widget, f"Onset: {display_id}")
             count += 1
