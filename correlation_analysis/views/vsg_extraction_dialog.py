@@ -38,11 +38,11 @@ DEFAULTS = {
     "angle_step": 10,
 }
 
-# Path to vsg_extraction.py relative to this file:
-#   views/ -> correlation_analysis/ -> vsg_extraction/vsg_extraction.py
-_SCRIPT_PATH = (
-    Path(__file__).parent.parent / "vsg_extraction" / "vsg_extraction.py"
-).resolve()
+from ..utils.paths import get_app_root
+
+# Path to vsg_extraction.py: resolved from the app root so it works regardless
+# of the current working directory or whether the app is frozen.
+_SCRIPT_PATH = get_app_root() / "correlation_analysis" / "vsg_extraction" / "vsg_extraction.py"
 
 
 class VsgExtractionDialog(QDialog):

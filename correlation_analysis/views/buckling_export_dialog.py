@@ -24,11 +24,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..utils.buckling_exporter import BucklingExportSettings
+from ..utils.paths import get_app_root
 
-# Root of the project (…/Correlation/) — two levels up from this file's package
-_SCRIPT_ROOT = Path(__file__).resolve().parents[2]
-
-# Fixed paths relative to the script root
+# Paths to bundled resources, relative to the application root.
+# get_app_root() is CWD-independent and works both from source and when frozen.
 _PYTHON_ENV_REL = "../../Envs/env"
 _FEMBUCKLING_REL = "../../Buckling/fembuckling"
 
@@ -48,11 +47,11 @@ def _auto_output_dir(ts: str) -> Path:
 
 
 def _auto_env_path() -> Path:
-    return (_SCRIPT_ROOT / _PYTHON_ENV_REL).resolve()
+    return (get_app_root() / _PYTHON_ENV_REL).resolve()
 
 
 def _auto_fembuckling_path() -> Path:
-    return (_SCRIPT_ROOT / _FEMBUCKLING_REL).resolve()
+    return (get_app_root() / _FEMBUCKLING_REL).resolve()
 
 
 class BucklingExportDialog(QDialog):

@@ -18,8 +18,9 @@ def setup_logging(log_dir: Path | None = None, level: int = logging.DEBUG) -> Pa
         Path to the log file (useful to show the user where logs are stored).
     """
     if log_dir is None:
-        # Place log next to main.py (two levels up from this utils/ file)
-        log_dir = Path(__file__).parent.parent.parent
+        # Place log in the user's current working directory so it follows
+        # wherever the app is invoked from (matches the Buckling_Exports dir).
+        log_dir = Path.cwd()
 
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
