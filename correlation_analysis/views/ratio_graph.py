@@ -301,6 +301,7 @@ class RatioGraphWidget(QWidget):
         self._plot.showGrid(x=True, y=True, alpha=0.3)
         self._plot.setLabel("bottom", "Strain A")
         self._plot.setLabel("left", "Strain B")
+        self._plot.getPlotItem().getViewBox().setMenuEnabled(False)
 
         # Install event filter on PlotWidget and its viewport for drops + box select
         self._plot.setAcceptDrops(True)
@@ -785,16 +786,24 @@ class RatioGraphWidget(QWidget):
         if not self._sensors:
             return None
         return {
-            "title":     self._title,
-            "sensors":   list(self._sensors),
-            "values_a":  list(self._values_a),
-            "values_b":  list(self._values_b),
-            "ratios":    list(self._ratios),
-            "label_a":   self._label_a,
-            "label_b":   self._label_b,
-            "load_step": self._load_step,
-            "ref_bands": [b["pct"] for b in self._ref_bands],
+            "title":        self._title,
+            "sensors":      list(self._sensors),
+            "values_a":     list(self._values_a),
+            "values_b":     list(self._values_b),
+            "ratios":       list(self._ratios),
+            "label_a":      self._label_a,
+            "label_b":      self._label_b,
+            "load_step":    self._load_step,
+            "ref_bands":    [b["pct"] for b in self._ref_bands],
+            "group_styles": {k: dict(v) for k, v in self._group_styles.items()},
         }
+
+    def restore_group_styles(self, styles: dict) -> None:
+        """Restore saved group styles and reapply them to the current scatter items."""
+        if not styles:
+            return
+        self._group_styles.update(styles)
+        self._apply_group_styles()
 
     def get_export_data(self) -> Optional[dict]:
         """Return current plot data for export, or None if nothing plotted."""

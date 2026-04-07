@@ -147,6 +147,10 @@ class GraphTabContent(QWidget):
             self._graph_layout.addWidget(g, row, col)
         self._update_graph_sizes()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_graph_sizes()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._update_graph_sizes()

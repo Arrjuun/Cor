@@ -104,6 +104,7 @@ class LoadStepGraphWidget(QWidget):
         self._plot.setLabel("bottom", "Load Step")
         self._plot.setLabel("left", "Strain")
         self._plot.addLegend(offset=(10, 10))
+        self._plot.getPlotItem().getViewBox().setMenuEnabled(False)
 
         # Event filter: context menu on plot, intercept drag-and-drop events
         self._plot.installEventFilter(self)
@@ -152,42 +153,38 @@ class LoadStepGraphWidget(QWidget):
         mp = vb.mapSceneToView(pos)
         x = mp.x()
 
-        # Find the nearest x value across all series (in data coordinates)
-        best_x = None
-        best_data_dist = np.inf
-        for info in self._series.values():
-            xdata = info["x"]
-            if len(xdata) == 0:
-                continue
-            idx = int(np.argmin(np.abs(xdata - x)))
-            d = abs(xdata[idx] - x)
-            if d < best_data_dist:
-                best_data_dist = d
-                best_x = xdata[idx]
-
-        if best_x is None:
-            self._vline.setVisible(False)
-            self._hover_label.setVisible(False)
-            return
-
-        # Convert that nearest data-x to scene pixels and check proximity
-        scene_nearest = vb.mapViewToScene(QPointF(best_x, mp.y()))
-        if abs(pos.x() - scene_nearest.x()) > self._SNAP_PX:
-            self._vline.setVisible(False)
-            self._hover_label.setVisible(False)
-            return
-
-        self._vline.setPos(best_x)
-        self._vline.setVisible(True)
-
-        lines = [f"<b>Load Step: {best_x:.4g}</b>"]
+        # Find the single closest data point across all series (pixel distance)
+        best_info = None
+        best_px_dist = np.inf
+        best_xi = None
         for info in self._series.values():
             xdata, ydata = info["x"], info["y"]
             if len(xdata) == 0:
                 continue
-            idx = int(np.argmin(np.abs(xdata - best_x)))
-            label = info["style"].label or info["sensor_name"]
-            lines.append(f"{label}: {ydata[idx]:.6g}")
+            idx = int(np.argmin(np.abs(xdata - x)))
+            scene_pt = vb.mapViewToScene(QPointF(xdata[idx], ydata[idx]))
+            dx = pos.x() - scene_pt.x()
+            dy = pos.y() - scene_pt.y()
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < best_px_dist:
+                best_px_dist = dist
+                best_info = info
+                best_xi = idx
+
+        if best_info is None or best_px_dist > self._SNAP_PX:
+            self._vline.setVisible(False)
+            self._hover_label.setVisible(False)
+            return
+
+        best_x = best_info["x"][best_xi]
+        self._vline.setPos(best_x)
+        self._vline.setVisible(True)
+
+        label = best_info["style"].label or best_info["sensor_name"]
+        lines = [
+            f"<b>Load Step: {best_x:.4g}</b>",
+            f"{label}: {best_info['y'][best_xi]:.6g}",
+        ]
 
         self._hover_label.setHtml("<br>".join(lines))
         self._hover_label.setPos(best_x, mp.y())

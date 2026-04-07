@@ -551,6 +551,7 @@ class GraphPresenter:
                         label_a=gcfg.get("label_a", "Source A"),
                         label_b=gcfg.get("label_b", "Source B"),
                     )
+                    rg.restore_group_styles(gcfg.get("group_styles", {}))
                     for pct in gcfg.get("ref_bands", []):
                         rg.add_slope_band(pct)
 

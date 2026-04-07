@@ -82,6 +82,11 @@ class SessionPresenter:
             }
             self._session.save(filepath, state)
             self._window.show_status(f"Session saved: {Path(filepath).name}")
+            QMessageBox.information(
+                self._window,
+                "Session Saved",
+                f"Successfully saved to:\n{filepath}",
+            )
         except Exception as exc:
             self._window.show_error(f"Failed to save session:\n{exc}")
 

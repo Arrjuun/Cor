@@ -320,13 +320,11 @@ class BokehExporter:
             labeled_renderers.append((label, line))
 
             if marker:
-                scatter_fn = getattr(p, marker, None)
-                if scatter_fn:
-                    sc = scatter_fn(
-                        "x", "y", source=src,
-                        color=color, size=8, visible=visible,
-                    )
-                    labeled_renderers.append((label, sc))
+                sc = p.scatter(
+                    "x", "y", source=src,
+                    marker=marker, color=color, size=8, visible=visible,
+                )
+                labeled_renderers.append((label, sc))
 
             legend_items.append(LegendItem(label=label, renderers=[line]))
 

@@ -188,7 +188,12 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
 
         is_rosette = group.get("is_rosette", False)
         source_label = group.get("source_label", "")
-        element_source_map[element_id] = {"source_label": source_label, "sensor_names": []}
+        element_source_map[element_id] = {
+            "source_label": source_label,
+            "sensor_names": [],
+            "sup_names": {},   # {cor: sensor_name} for SUP series
+            "inf_names": {},   # {cor: sensor_name} for INF series
+        }
 
         cor_sup: dict[str, pd.Series | None] = {}
         cor_inf: dict[str, pd.Series | None] = {}
@@ -200,10 +205,14 @@ def generate_csv(selections: list[dict], data_model: DataModel) -> pd.DataFrame:
                 sname = sources_list[0].get("sensor_name", "")
                 if sname and sname != "—":
                     element_source_map[element_id]["sensor_names"].append(sname)
+                    element_source_map[element_id]["sup_names"][cor] = sname
                 s = _fetch(sources_list[0])
                 if s is not None:
                     cor_sup[cor] = s
             if len(sources_list) > 1:
+                sname_inf = sources_list[1].get("sensor_name", "")
+                if sname_inf and sname_inf != "—":
+                    element_source_map[element_id]["inf_names"][cor] = sname_inf
                 s = _fetch(sources_list[1])
                 if s is not None:
                     cor_inf[cor] = s
